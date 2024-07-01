@@ -2,6 +2,7 @@ lightning[pytorch-extra]
 matplotlib
 mlflow
 numpy
+pydot
 torch
 torchmetrics
 torchvision

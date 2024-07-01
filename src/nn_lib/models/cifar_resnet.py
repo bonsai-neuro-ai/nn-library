@@ -83,3 +83,17 @@ class CIFARResNet(Network):
 
         super().__init__(spec)
 
+
+if __name__ == "__main__":
+    import torch
+    from nn_lib.models.utils import graph2dot
+
+    model = CIFARResNet("cifar10_20_16")
+
+    tester = model(torch.randn(1, 3, 32, 32))
+
+    dot = graph2dot(model.graph)
+
+    image = dot.create_png(prog="dot")
+    with open("cifar_resnet.png", "wb") as f:
+        f.write(image)
