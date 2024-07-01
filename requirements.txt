@@ -1,0 +1,8 @@
+lightning[pytorch-extra]
+matplotlib
+mlflow
+numpy
+torch
+torchmetrics
+torchvision
+tqdm
