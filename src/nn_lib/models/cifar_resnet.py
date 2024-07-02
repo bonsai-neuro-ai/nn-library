@@ -1,6 +1,7 @@
 from torch import nn
 from nn_lib.models.utils import Add, Identity
 from nn_lib.models.graph import Network
+from typing import Tuple
 
 
 def res_block(in_channels: int, out_channels: int, stride: int):
@@ -46,30 +47,23 @@ class CIFARResNet(Network):
 
     Based on https://github.com/facebookresearch/open_lth/blob/main/models/cifar_resnet.py
     """
+
     def __init__(self, model_name: str):
         self.name = model_name.lower()
 
-        dataset, depth, width = self.name.split("_")
-        if dataset not in ["cifar10", "cifar100"]:
-            raise ValueError(f"Invalid dataset: {dataset}")
-        if not depth.isdigit() or not width.isdigit():
-            raise ValueError(f"Invalid depth or width: {depth} {width}")
-        depth, width, classes = int(depth), int(width), int(dataset[5:])
+        self.depth, self.width, self.num_classes = self.parse_name(model_name)
 
-        if (depth - 2) % 3 != 0:
-            raise ValueError(f"Invalid ResNet depth: {depth}")
-
-        depth = (depth - 2) // 6
+        depth = (self.depth - 2) // 6
 
         spec = {
             "input": None,
             "prep": {
-                "conv": nn.Conv2d(3, width, kernel_size=3, stride=1, padding=1, bias=False),
+                "conv": nn.Conv2d(3, self.width, kernel_size=3, stride=1, padding=1, bias=False),
                 "bn": nn.BatchNorm2d(16),
                 "relu": nn.ReLU(),
             },
         }
-        counter, in_features = 0, width
+        counter, in_features = 0, self.width
         for i in range(3):
             for j in range(depth):
                 stride, out_features = 1, in_features
@@ -79,9 +73,30 @@ class CIFARResNet(Network):
                 in_features = out_features
                 counter += 1
         spec["pool"] = (nn.AdaptiveAvgPool2d(1), f"block{counter - 1:03d}/relu")
-        spec["fc"] = nn.Sequential(nn.Flatten(), nn.Linear(width * 4, classes))
+        spec["fc"] = nn.Sequential(nn.Flatten(), nn.Linear(self.width * 4, self.num_classes))
 
         super().__init__(spec)
+
+    @staticmethod
+    def parse_name(model_name: str) -> Tuple[int, int, int]:
+        """Parse a string name of the model and return depth, width, num_classes.
+
+        Raises a ValueError if the name is invalid.
+        """
+
+        parts = model_name.lower().split("_")
+
+        if parts[0] not in ["cifar10", "cifar100"]:
+            raise ValueError(
+                f"Valid model names are like 'cifar10_20_16' or 'cifar100_20_16' but "
+                f"got {model_name}"
+            )
+        depth = int(parts[1])
+        if depth < 20 or (depth - 2) % 3 != 0:
+            raise ValueError(f"Resnet depth must be 3n+2 for some n≥6, but got {depth}")
+        width = int(parts[2]) if len(parts) == 3 else 16
+        num_classes = 10 if parts[0] == "cifar10" else 100
+        return depth, width, num_classes
 
 
 if __name__ == "__main__":

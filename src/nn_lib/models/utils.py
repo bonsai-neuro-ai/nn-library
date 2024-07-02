@@ -1,5 +1,4 @@
 import pydot
-import graphviz
 from nn_lib.models.graph import GraphType
 
 

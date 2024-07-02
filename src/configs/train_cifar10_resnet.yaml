@@ -1,0 +1,13 @@
+expt_name: cifar10-debug
+model:
+  class_path: LitCIFARResNet
+  init_args:
+    depth: 20
+    width: 16
+data:
+  class_path: CIFAR10DataModule
+  init_args:
+      root_dir: /data/datasets/
+      batch_size: 128
+trainer:
+  max_epochs: 100
