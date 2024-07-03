@@ -58,7 +58,9 @@ class MainConfig:
 
 def main(args: jsonargparse.Namespace):
     # Log using MLFlow
-    logger = MLFlowLogger(experiment_name=args.expt_name, tracking_uri=args.env.mlflow_tracking_uri)
+    logger = MLFlowLogger(
+        experiment_name=args.expt_name, tracking_uri=args.env.mlflow_tracking_uri, log_model=True
+    )
 
     # TODO – break early if this run is already complete
     # TODO - verify resume from checkpoint is working with this Trainer
