@@ -8,7 +8,12 @@ from abc import ABCMeta, abstractmethod
 
 class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
     def __init__(
-        self, root_dir="data", train_val_split=11 / 12, seed=8675309, batch_size=64, num_workers=4
+        self,
+        root_dir: str = "data",
+        train_val_split: float = 11 / 12,
+        seed: int = 8675309,
+        batch_size: int = 64,
+        num_workers: int = 4,
     ):
         super().__init__()
         self.save_hyperparameters("train_val_split", "seed", "batch_size")
