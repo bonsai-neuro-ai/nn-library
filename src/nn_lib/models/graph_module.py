@@ -22,8 +22,8 @@ GraphType = Dict[str, Tuple[Any, List[str]]]
 INPUT_LAYER = "input"
 
 
-class Network(nn.Module):
-    """A Network is a PyTorch Module specified by a graph of named operations. Implementation
+class GraphModule(nn.Module):
+    """A GraphModule is a PyTorch Module specified by a graph of named operations. Implementation
     draws inspiration from https://github.com/davidcpage/cifar10-fast/blob/master/torch_backend.py
 
     The constructor takes a single 'architecture' argument, which is a nested dict of the form
@@ -34,7 +34,7 @@ class Network(nn.Module):
     """
 
     def __init__(self, architecture: ModelType):
-        super(Network, self).__init__()
+        super(GraphModule, self).__init__()
         # Convert ModelType specification of an architecture into 'flatter' GraphType
         self.graph = model2graph(architecture)
         if INPUT_LAYER not in self.graph:
@@ -187,4 +187,4 @@ def model2graph(model: ModelType, sep="/") -> GraphType:
     return graph
 
 
-__all__ = ["model2graph", "Network"]
+__all__ = ["model2graph", "GraphModule"]

@@ -1,5 +1,5 @@
 import pydot
-from nn_lib.models.graph import GraphType
+from nn_lib.models.graph_module import GraphType
 
 
 class Add:

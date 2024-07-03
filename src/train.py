@@ -1,78 +1,11 @@
-from torch import nn
 import lightning as lit
-from nn_lib.datasets import CIFAR10DataModule, CIFAR100DataModule
 from nn_lib.models import CIFARResNet
+from nn_lib.datasets import CIFAR10DataModule, CIFAR100DataModule
 from lightning.pytorch.loggers import MLFlowLogger
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
-from torch.optim import Adam
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torchmetrics import Accuracy
 from typing import Union, Optional
 from datetime import timedelta
 from dataclasses import dataclass
 import jsonargparse
-
-
-class LitCIFARResNet(lit.LightningModule):
-    # TODO - refactor this to the nn_lib.models module as a generic base for classification problems.
-    def __init__(self, depth: int, width: int, num_classes: int = 10):
-        super().__init__()
-        self.model = CIFARResNet(f"cifar{num_classes}_{depth}_{width}")
-        self.loss = nn.CrossEntropyLoss()
-        self.metrics = {
-            "acc": Accuracy("multiclass", num_classes=self.model.num_classes),
-        }
-
-    def forward(self, x):
-        return self.model(x)["fc"]
-
-    def to(self, device):
-        out = super().to(device)
-        for metric in self.metrics.values():
-            metric.to(device)
-        return out
-
-    def training_step(self, batch, batch_idx):
-        x, y = batch
-        y_hat = self(x)
-        loss = self.loss(y_hat, y)
-        self.log("train_loss", loss)
-        for name, metric in self.metrics.items():
-            self.log(f"train_{name}", metric(y_hat, y))
-        return loss
-
-    def on_train_epoch_start(self):
-        self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"])
-
-    def validation_step(self, batch, batch_idx):
-        x, y = batch
-        y_hat = self(x)
-        loss = self.loss(y_hat, y)
-        self.log("val_loss", loss)
-        for name, metric in self.metrics.items():
-            self.log(f"val_{name}", metric(y_hat, y))
-        return loss
-
-    def configure_optimizers(self):
-        opt = Adam(self.parameters(), lr=1e-3)
-        sched = ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=3, min_lr=1e-6)
-        return {
-            "optimizer": opt,
-            "lr_scheduler": {
-                "scheduler": sched,
-                "interval": "epoch",
-                "frequency": 1,
-                "monitor": "val_loss",
-            },
-        }
-
-    def configure_callbacks(self):
-        # Note: important that EarlyStopping patience is larger than ReduceLROnPlateau patience
-        # so that the model has a chance to recover from a learning rate drop
-        return [
-            ModelCheckpoint(monitor="val_loss", save_top_k=1, mode="min", save_last=True),
-            EarlyStopping(monitor="val_loss", patience=10),
-        ]
 
 
 @dataclass
@@ -117,7 +50,7 @@ class MainConfig:
     """Dataclass specifying CLI args to the main() function."""
 
     expt_name: str
-    model: LitCIFARResNet
+    model: CIFARResNet
     data: Union[CIFAR10DataModule, CIFAR100DataModule]
     trainer: TrainerConfig
     env: EnvConfig
