@@ -59,7 +59,7 @@ class CIFARResNet(Network):
             "input": None,
             "prep": {
                 "conv": nn.Conv2d(3, self.width, kernel_size=3, stride=1, padding=1, bias=False),
-                "bn": nn.BatchNorm2d(16),
+                "bn": nn.BatchNorm2d(self.width),
                 "relu": nn.ReLU(),
             },
         }
