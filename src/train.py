@@ -86,6 +86,8 @@ class TrainerConfig:
     accelerator: str = "auto"
     strategy: str = "auto"
     devices: Union[list[int], str, int] = "auto"
+    fast_dev_run: Optional[Union[int, bool]] = None
+    # --- above: local config, below: hyperparameters that matter ---
     max_epochs: Optional[int] = None
     min_epochs: Optional[int] = None
     max_steps: int = -1
@@ -104,6 +106,13 @@ class TrainerConfig:
 
 
 @dataclass
+class EnvConfig:
+    """Local environment configuration."""
+
+    mlflow_tracking_uri: Optional[str] = None
+
+
+@dataclass
 class MainConfig:
     """Dataclass specifying CLI args to the main() function."""
 
@@ -111,19 +120,24 @@ class MainConfig:
     model: LitCIFARResNet
     data: Union[CIFAR10DataModule, CIFAR100DataModule]
     trainer: TrainerConfig
-    # TODO - add logger config
+    env: EnvConfig
 
 
 def main(args: jsonargparse.Namespace):
     # Log using MLFlow
-    logger = MLFlowLogger(experiment_name=args.expt_name)
+    logger = MLFlowLogger(experiment_name=args.expt_name, tracking_uri=args.env.mlflow_tracking_uri)
 
     # TODO – break early if this run is already complete
     # TODO - verify resume from checkpoint is working with this Trainer
 
+    # Remove the config arguments from the args namespace; they just clutter the parameters log.
+    if hasattr(args, "config"):
+        delattr(args, "config")
+    if hasattr(args, "__default_config__"):
+        delattr(args, "__default_config__")
+
     # Save run metadata to the logger -- using the fact that the log_hyperparams method can take
     # a namespace object directly, and we have a namespace object for MainConfig.
-    delattr(args, "config")
     logger.log_hyperparams(args)
 
     # Call instantiate_classes to recursively instantiate all classes in the config. For example,

@@ -4,3 +4,5 @@ trainer:
   accelerator: auto
   devices: auto
   strategy: auto
+env:
+  mlflow_tracking_uri: mlruns
