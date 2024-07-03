@@ -7,7 +7,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchmetrics import Accuracy
-from typing import Union, Optional, Dict
+from typing import Union, Optional
 from datetime import timedelta
 from dataclasses import dataclass
 import jsonargparse
@@ -81,11 +81,16 @@ class TrainerConfig:
     affect the training process and must be logged in a config file.
     """
 
+    # TODO - write helpers to annotate some fields as hyperparameters that affect the model and
+    #  others as 'local config'. The accelerator/strategy/devices fields are 'local config', e.g.
+    accelerator: str = "auto"
+    strategy: str = "auto"
+    devices: Union[list[int], str, int] = "auto"
     max_epochs: Optional[int] = None
     min_epochs: Optional[int] = None
     max_steps: int = -1
     min_steps: Optional[int] = None
-    max_time: Optional[Union[str, timedelta, Dict[str, int]]] = None
+    max_time: Optional[Union[str, timedelta, dict[str, int]]] = None
     limit_train_batches: Optional[Union[int, float]] = None
     limit_val_batches: Optional[Union[int, float]] = None
     limit_test_batches: Optional[Union[int, float]] = None
@@ -109,13 +114,7 @@ class MainConfig:
     # TODO - add logger config
 
 
-def main():
-    # TODO - support cfg as argument without breaking log_hyperparams
-    parser = jsonargparse.ArgumentParser()
-    parser.add_class_arguments(MainConfig)
-    parser.add_argument("--config", action="config")
-    args = parser.parse_args()
-
+def main(args: jsonargparse.Namespace):
     # Log using MLFlow
     logger = MLFlowLogger(experiment_name=args.expt_name)
 
@@ -137,11 +136,14 @@ def main():
 
     # Create the trainer object using our custom logger and set the remaining arguments from the
     # TrainerConfig.
-    trainer = lit.Trainer(
-        accelerator="gpu", devices=1, strategy="ddp", logger=logger, **cfg.trainer.__dict__
-    )
-    trainer.fit(cfg.model, cfg.data)
+    trainer = lit.Trainer(logger=logger, **cfg.trainer.__dict__)
+    trainer.fit(cfg.model, cfg.data, ckpt_path="last")
 
 
 if __name__ == "__main__":
-    main()
+    parser = jsonargparse.ArgumentParser(default_config_files=["configs/local_config.yaml"])
+    parser.add_class_arguments(MainConfig)
+    parser.add_argument("--config", action="config")
+    args = parser.parse_args()
+
+    main(args)
