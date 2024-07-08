@@ -1,10 +1,11 @@
 import torch
 import lightning as lit
 import pandas as pd
+import mlflow
 import importlib
 import inspect
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable, Generator, Tuple, Any
 
 
 def restore_params_from_mlflow_run(mlflow_run: pd.Series):
@@ -35,6 +36,26 @@ def restore_params_from_mlflow_run(mlflow_run: pd.Series):
                 d = d[k]
             d[keys[-1]] = value
     return params
+
+
+def search_runs_by_params(experiment_name: str, params: dict) -> pd.DataFrame:
+    """Query the MLflow server for runs in the specified experiment that match the given parameters.
+    """
+    flattened_params = dict(iter_flatten_dict(params, join_op="/".join))
+    queries = {f"params.`{k}`": v for k, v in flattened_params.items()}
+    query_string = " and ".join([f"{k} = '{v}'" for k, v in queries.items()])
+    return mlflow.search_runs(experiment_names=[experiment_name], filter_string=query_string)
+
+
+def search_single_run_by_params(experiment_name: str, params: dict) -> pd.Series:
+    """Query the MLflow server for runs in the specified experiment that match the given parameters.
+    """
+    df = search_runs_by_params(experiment_name, params)
+    if len(df) == 0:
+        raise ValueError("No runs found with the specified parameters")
+    elif len(df) > 1:
+        raise ValueError("Multiple runs found with the specified parameters")
+    return df.iloc[0]
 
 
 def instantiate(model_class: str, init_args: dict) -> object:
@@ -98,3 +119,18 @@ def restore_data_from_mlflow_run(run: pd.Series):
     init_args = params_dict["data"]["init_args"]
 
     return instantiate(model_class, init_args)
+
+
+def iter_flatten_dict(
+    d: dict, join_op: Callable, prefix=tuple()
+) -> Generator[Tuple[str, Any], None, None]:
+    """Iterate a nested dict in order, yielding (k1k2k3, v) from a dict like {k1: {k2: {k3: v}}}.
+    Uses the given join_op to join keys together. In this example, join_op(k1, k2, k3) should
+    return k1k2k3
+    """
+    for k, v in d.items():
+        new_prefix = prefix + (k,)
+        if type(v) is dict:
+            yield from iter_flatten_dict(v, join_op, new_prefix)
+        else:
+            yield join_op(new_prefix), v

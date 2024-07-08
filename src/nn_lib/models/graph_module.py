@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple, Callable, Union, Any, Iterable, List, Optional, Generator
+from typing import Dict, Tuple, Callable, Union, Any, Iterable, List, Optional
 import warnings
+from nn_lib.utils import iter_flatten_dict
 
 # An 'Operation' is essentially a callable object that behaves like a nn.Module. Use None for
 # input values.
@@ -84,21 +85,6 @@ class GraphModule(nn.Module):
 #####################
 
 
-def _iter_dict(
-    d: dict, join_op: Callable, prefix=tuple()
-) -> Generator[Tuple[str, Any], None, None]:
-    """Iterate a nested dict in order, yielding (k1k2k3, v) from a dict like {k1: {k2: {k3: v}}}.
-    Uses the given join_op to join keys together. In this example, join_op(k1, k2, k3) should
-    return k1k2k3
-    """
-    for k, v in d.items():
-        new_prefix = prefix + (k,)
-        if type(v) is dict:
-            yield from _iter_dict(v, join_op, new_prefix)
-        else:
-            yield join_op(new_prefix), v
-
-
 def _canonicalize_input(op: OpWithMaybeInputs) -> Tuple[OpType, List[InputType]]:
     """The input to an operation can be specified in a few ways (type OpWithMaybeInputs). This
     function ensures a canonical form of (op, inputs) where inputs is a list of strings or ints.
@@ -153,7 +139,7 @@ def model2graph(model: ModelType, sep="/") -> GraphType:
     # Note that we don't convert this into a dict here in case of name conflicts.
     flattened_layers = [
         (joined_path, _canonicalize_input(op))
-        for joined_path, op in _iter_dict(model, join_op=sep.join)
+        for joined_path, op in iter_flatten_dict(model, join_op=sep.join)
     ]
 
     # Resolve input references. In the example above, op1 has no named input, so it will use
