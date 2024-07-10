@@ -1,0 +1,6 @@
+model:
+  class_path: nn_lib.models.ResNet
+  init_args:
+    depth: 20
+    width: 16
+    num_classes: 10

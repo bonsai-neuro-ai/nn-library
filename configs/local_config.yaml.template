@@ -6,3 +6,4 @@ trainer:
   strategy: auto
 env:
   mlflow_tracking_uri: mlruns
+  data_root: data

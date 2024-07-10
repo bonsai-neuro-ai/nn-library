@@ -1,5 +1,5 @@
 import lightning as lit
-from nn_lib.models import CIFARResNet
+from nn_lib.models import ResNet
 from nn_lib.datasets import CIFAR10DataModule, CIFAR100DataModule
 from lightning.pytorch.loggers import MLFlowLogger
 from typing import Union, Optional
@@ -13,7 +13,6 @@ class TrainerConfig:
     """Configuration for the Trainer class; just the subset of Trainer arguments that significantly
     affect the training process and must be logged in a config file.
     """
-
     # TODO - write helpers to annotate some fields as hyperparameters that affect the model and
     #  others as 'local config'. The accelerator/strategy/devices fields are 'local config', e.g.
     accelerator: str = "auto"
@@ -41,16 +40,14 @@ class TrainerConfig:
 @dataclass
 class EnvConfig:
     """Local environment configuration."""
-
     mlflow_tracking_uri: Optional[str] = None
-
+    data_root: Optional[str] = None
 
 @dataclass
 class MainConfig:
     """Dataclass specifying CLI args to the main() function."""
-
     expt_name: str
-    model: CIFARResNet
+    model: ResNet
     data: Union[CIFAR10DataModule, CIFAR100DataModule]
     trainer: TrainerConfig
     env: EnvConfig
@@ -92,6 +89,8 @@ def main(args: jsonargparse.Namespace):
 if __name__ == "__main__":
     parser = jsonargparse.ArgumentParser(default_config_files=["configs/local_config.yaml"])
     parser.add_class_arguments(MainConfig)
+    parser.link_arguments("env.data_root", "data.init_args.root_dir", apply_on="parse")
+    # parser.link_arguments("data.init_args.root_dir", "env.data_root", apply_on="parse")
     parser.add_argument("--config", action="config")
     args = parser.parse_args()
 

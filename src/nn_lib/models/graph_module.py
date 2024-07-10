@@ -13,7 +13,7 @@ InputType = Union[str, int]
 # list of them
 OpWithMaybeInputs = Union[OpType, Tuple[OpType, InputType], Tuple[OpType, Iterable[InputType]]]
 # A model is a dict of named operations. Operations can themselves contain Models, so this allows
-# for models to be nested.
+# for model to be nested.
 ModelType = Dict[str, OpWithMaybeInputs]
 # A Graph is a map like {node: (edge, [parents])}, where edge can be Any. Here, edges will be
 # Callables

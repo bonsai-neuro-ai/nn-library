@@ -3,6 +3,7 @@ lightning[pytorch-extra]
 matplotlib
 mlflow
 numpy
+parse
 pydot
 torch
 torchmetrics

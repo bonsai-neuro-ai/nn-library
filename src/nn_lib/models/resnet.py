@@ -2,7 +2,7 @@ from torch import nn
 from nn_lib.models.utils import Add, Identity
 from nn_lib.models.lit_classifier import LitClassifier
 from nn_lib.models.graph_module import ModelType
-from typing import Tuple
+import parse
 
 
 def res_block(in_channels: int, out_channels: int, stride: int):
@@ -43,17 +43,19 @@ def res_block(in_channels: int, out_channels: int, stride: int):
     return block
 
 
-class CIFARResNet(LitClassifier):
-    """ResNet for CIFAR-10 and CIFAR-100 datasets.
+class ResNet(LitClassifier):
+    """ResNet architecture.
 
-    Architecture based on github.com/facebookresearch/open_lth/blob/main/models/cifar_resnet.py
+    Architecture based on github.com/facebookresearch/open_lth/blob/main/model/resnet.py
     """
 
+    NAME_PATTERN = r"resnet{depth}x{width}_{num_classes}"
+
     def __init__(self, depth: int, width: int, num_classes: int):
-        self.name = f"cifar{num_classes}_{depth}_{width}"
+        self.name = ResNet.NAME_PATTERN.format(**locals())
         self.depth, self.width, self.num_classes = depth, width, num_classes
         super().__init__(
-            architecture=CIFARResNet.get_architecture(depth, width, num_classes),
+            architecture=ResNet.get_architecture(depth, width, num_classes),
             num_classes=num_classes,
             last_layer_name="fc",
         )
@@ -61,13 +63,11 @@ class CIFARResNet(LitClassifier):
     @staticmethod
     def get_architecture(depth: int, width: int, num_classes: int) -> ModelType:
         if depth < 20 or (depth - 2) % 3 != 0:
-            raise ValueError(f"Resnet depth must be 3n+2 for some n≥6 but got {depth}")
+            raise ValueError(f"ResNet depth must be 3n+2 for some n≥6 but got {depth}")
         if width < 1:
             raise ValueError(
-                f"Resnet width must be a positive integer (≥16 recommended), but got {width}"
+                f"ResNet width must be a positive integer (≥16 recommended), but got {width}"
             )
-        if num_classes not in [10, 100]:
-            raise ValueError(f"CIFAR num_classes must be 10 or 100, but got {num_classes}")
 
         num_blocks = (depth - 2) // 6
 
@@ -93,30 +93,19 @@ class CIFARResNet(LitClassifier):
         return spec
 
     @staticmethod
-    def from_name(model_name: str) -> "CIFARResNet":
-        """Parse a string name of the model and return depth, width, num_classes.
-
-        Raises a ValueError if the name is invalid.
+    def from_name(model_name: str) -> "ResNet":
+        """Parse a string name of the model and return a new instance of that model family.
         """
 
-        parts = model_name.lower().split("_")
-
-        if parts[0] not in ["cifar10", "cifar100"]:
-            raise ValueError(
-                f"Valid model names are like 'cifar10_20_16' or 'cifar100_20_16' but "
-                f"got {model_name}"
-            )
-        depth = int(parts[1])
-        width = int(parts[2]) if len(parts) == 3 else 16
-        num_classes = 10 if parts[0] == "cifar10" else 100
-        return CIFARResNet(depth, width, num_classes)
+        parts = parse.parse(ResNet.NAME_PATTERN, model_name)
+        return ResNet(int(parts["depth"]), int(parts["width"]), int(parts["num_classes"]))
 
 
 if __name__ == "__main__":
     import torch
     from nn_lib.models.utils import graph2dot
 
-    model = CIFARResNet(20, 16, 10)
+    model = ResNet(20, 16, 10)
 
     tester = model(torch.randn(1, 3, 32, 32))
 
