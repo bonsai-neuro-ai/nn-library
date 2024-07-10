@@ -2,7 +2,7 @@ from torch import nn
 import lightning as lit
 from nn_lib.models.graph_module import GraphModule, ModelType
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
-from torch.optim import Adam
+from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchmetrics import Accuracy
 
@@ -60,7 +60,7 @@ class LitClassifier(lit.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        opt = Adam(self.parameters(), lr=1e-3)
+        opt = AdamW(self.parameters(), lr=1e-3)
         sched = ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=3, min_lr=1e-6)
         return {
             "optimizer": opt,
