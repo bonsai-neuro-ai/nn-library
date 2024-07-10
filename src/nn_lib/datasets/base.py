@@ -1,5 +1,5 @@
 import torch
-from torchvision.transforms import Normalize, Compose
+from torchvision.transforms import Normalize, Compose, ToTensor
 from torch.utils.data import DataLoader, random_split
 import lightning as lit
 import os
@@ -25,13 +25,23 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         self.train_ds_split, self.val_ds_split, self.test_ds = None, None, None
 
     @property
-    def data_dir(self):
-        return os.path.join(self.root_dir, self.name)
+    def metadata(self):
+        metadata_file = os.path.join(self.data_dir, "metadata.pkl")
+        if not os.path.exists(metadata_file):
+            self.prepare_data()
+        return torch.load(metadata_file)
 
     @property
-    @abstractmethod
-    def transform(self):
-        """Get the basic (test) transform for the dataset. Must be implemented by subclass."""
+    def train_transform(self):
+        return Compose([ToTensor(), Normalize(self.metadata["mean"], self.metadata["std"])])
+
+    @property
+    def test_transform(self):
+        return Compose([ToTensor(), Normalize(self.metadata["mean"], self.metadata["std"])])
+
+    @property
+    def data_dir(self):
+        return os.path.join(self.root_dir, self.name)
 
     @abstractmethod
     def train_data(self, transform=None):
@@ -44,15 +54,12 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         dataset."""
 
     def prepare_data(self) -> None:
-        d = self.train_data(transform=self.transform)
-        _ = self.test_data(transform=self.transform)
+        d = self.train_data(transform=ToTensor())
+        _ = self.test_data(transform=ToTensor())
 
         metadata_file = os.path.join(self.data_dir, "metadata.pkl")
 
-        if os.path.exists(metadata_file):
-            # Load mean and std from metadata file
-            metadata = torch.load(metadata_file)
-        else:
+        if not os.path.exists(metadata_file):
             # Calculate mean and std of each channel of the dataset.
             im = next(iter(d))[0]
             num_channels = im.shape[0]
@@ -65,14 +72,10 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             metadata = {"mean": mean, "std": std, "num_channels": num_channels, "n": len(d)}
             torch.save(metadata, metadata_file)
 
-        mean, std = metadata["mean"], metadata["std"]
-        print(f"mean: {mean}, std: {std}")
-        self.test_transform = Compose([self.transform, Normalize(mean, std)])
-
     def setup(self, stage: str):
         # Assign Train/val split(s) for use in Dataloaders
         if stage == "fit":
-            data_full = self.train_data(transform=self.test_transform)
+            data_full = self.train_data(transform=self.train_transform)
             n_train = int(len(data_full) * self.train_val_split)
             n_val = len(data_full) - n_train
             self.train_ds_split, self.val_ds_split = random_split(
