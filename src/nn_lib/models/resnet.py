@@ -51,13 +51,14 @@ class ResNet(LitClassifier):
 
     NAME_PATTERN = r"resnet{depth}x{width}_{num_classes}"
 
-    def __init__(self, depth: int, width: int, num_classes: int):
+    def __init__(self, depth: int, width: int, num_classes: int, label_smoothing: float = 0.0):
         self.name = ResNet.NAME_PATTERN.format(**locals())
         self.depth, self.width, self.num_classes = depth, width, num_classes
         super().__init__(
             architecture=ResNet.get_architecture(depth, width, num_classes),
             num_classes=num_classes,
             last_layer_name="fc",
+            label_smoothing=label_smoothing,
         )
 
     @staticmethod
@@ -94,8 +95,7 @@ class ResNet(LitClassifier):
 
     @staticmethod
     def from_name(model_name: str) -> "ResNet":
-        """Parse a string name of the model and return a new instance of that model family.
-        """
+        """Parse a string name of the model and return a new instance of that model family."""
 
         parts = parse.parse(ResNet.NAME_PATTERN, model_name)
         return ResNet(int(parts["depth"]), int(parts["width"]), int(parts["num_classes"]))

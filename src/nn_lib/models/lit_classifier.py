@@ -11,11 +11,22 @@ class LitClassifier(lit.LightningModule):
     """A simple classification class. Provided with a GraphModule architecture, this class wraps it
     in a LightningModule to train it using some standard training logic.
     """
-    def __init__(self, architecture: ModelType, num_classes: int, last_layer_name: str):
+
+    def __init__(
+        self,
+        architecture: ModelType,
+        num_classes: int,
+        last_layer_name: str,
+        label_smoothing: float = 0.0,
+    ):
         super().__init__()
+        self.save_hyperparameters("label_smoothing", "num_classes")
         self.model = GraphModule(architecture)
-        self.loss = nn.CrossEntropyLoss()
-        self.metrics = {"acc": Accuracy("multiclass", num_classes=num_classes)}
+        self.loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        self.metrics = {
+            "acc": Accuracy("multiclass", num_classes=num_classes),
+            "raw_ce": nn.CrossEntropyLoss(),
+        }
         self._last_layer_name = last_layer_name
 
     def forward(self, x):
@@ -43,9 +54,9 @@ class LitClassifier(lit.LightningModule):
         x, y = batch
         y_hat = self(x)[self._last_layer_name]
         loss = self.loss(y_hat, y)
-        self.log("val_loss", loss)
+        self.log("val_loss", loss, sync_dist=True)
         for name, metric in self.metrics.items():
-            self.log(f"val_{name}", metric(y_hat, y))
+            self.log(f"val_{name}", metric(y_hat, y), sync_dist=True)
         return loss
 
     def configure_optimizers(self):
