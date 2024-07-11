@@ -20,7 +20,6 @@ class LitClassifier(lit.LightningModule):
         label_smoothing: float = 0.0,
     ):
         super().__init__()
-        self.save_hyperparameters("label_smoothing", "num_classes")
         self.model = GraphModule(architecture)
         self.loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         self.metrics = {

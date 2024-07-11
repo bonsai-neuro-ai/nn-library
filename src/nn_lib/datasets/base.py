@@ -16,7 +16,6 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         num_workers: int = 4,
     ):
         super().__init__()
-        self.save_hyperparameters("train_val_split", "seed", "batch_size")
         self.train_val_split = train_val_split
         self.seed = seed
         self.bs = batch_size

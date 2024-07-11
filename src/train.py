@@ -62,15 +62,13 @@ def main(args: jsonargparse.Namespace):
     # TODO – break early if this run is already complete
     # TODO - verify resume from checkpoint is working with this Trainer
 
-    # Remove the config arguments from the args namespace; they just clutter the parameters log.
-    if hasattr(args, "config"):
-        delattr(args, "config")
-    if hasattr(args, "__default_config__"):
-        delattr(args, "__default_config__")
-
     # Save run metadata to the logger -- using the fact that the log_hyperparams method can take
     # a namespace object directly, and we have a namespace object for MainConfig.
     logger.log_hyperparams(args)
+
+    # Log any text artifacts passed in to the logger.
+    for file_name, contents in artifacts.items():
+        logger.experiment.log_text(run_id=logger.run_id, text=contents, artifact_file=file_name)
 
     # Call instantiate_classes to recursively instantiate all classes in the config. For example,
     # args.data will be a Namespace but args_with_instances.data will be an instance of a
@@ -90,8 +88,13 @@ if __name__ == "__main__":
     parser = jsonargparse.ArgumentParser(default_config_files=["configs/local_config.yaml"])
     parser.add_class_arguments(MainConfig)
     parser.link_arguments("env.data_root", "data.init_args.root_dir", apply_on="parse")
-    # parser.link_arguments("data.init_args.root_dir", "env.data_root", apply_on="parse")
     parser.add_argument("--config", action="config")
     args = parser.parse_args()
 
-    main(args)
+    # Remove the config arguments from the args namespace; they just clutter the parameters log.
+    if hasattr(args, "config"):
+        delattr(args, "config")
+    if hasattr(args, "__default_config__"):
+        delattr(args, "__default_config__")
+
+    main(args, artifacts={"config.yaml": parser.dump(args)})
