@@ -1,6 +1,7 @@
 import lightning as lit
 from nn_lib.models import ResNet
 from nn_lib.datasets import CIFAR10DataModule, CIFAR100DataModule
+from nn_lib.utils import search_runs_by_params
 from lightning.pytorch.loggers import MLFlowLogger
 from typing import Union, Optional
 from datetime import timedelta
@@ -13,6 +14,7 @@ class TrainerConfig:
     """Configuration for the Trainer class; just the subset of Trainer arguments that significantly
     affect the training process and must be logged in a config file.
     """
+
     # TODO - write helpers to annotate some fields as hyperparameters that affect the model and
     #  others as 'local config'. The accelerator/strategy/devices fields are 'local config', e.g.
     accelerator: str = "auto"
@@ -40,12 +42,15 @@ class TrainerConfig:
 @dataclass
 class EnvConfig:
     """Local environment configuration."""
+
     mlflow_tracking_uri: Optional[str] = None
     data_root: Optional[str] = None
+
 
 @dataclass
 class MainConfig:
     """Dataclass specifying CLI args to the main() function."""
+
     expt_name: str
     model: ResNet
     data: Union[CIFAR10DataModule, CIFAR100DataModule]
@@ -53,13 +58,24 @@ class MainConfig:
     env: EnvConfig
 
 
-def main(args: jsonargparse.Namespace):
+def main(args: jsonargparse.Namespace, artifacts: dict[str, str] = None):
+    # Search existing runs to see if a run with the same hyperparameters has already been done.
+    # TODO - annotate which args are hyperparameters and which are environ config, and only search
+    #  runs by hyperparameters that matter.
+    search_results = search_runs_by_params(
+        experiment_name=args.expt_name,
+        params=args.as_dict(),
+        tracking_uri=args.env.mlflow_tracking_uri,
+    )
+    if len(search_results) > 0:
+        print("A run with the same hyperparameters already exists. Skipping training.")
+        return
+
     # Log using MLFlow
     logger = MLFlowLogger(
         experiment_name=args.expt_name, tracking_uri=args.env.mlflow_tracking_uri, log_model=True
     )
 
-    # TODO – break early if this run is already complete
     # TODO - verify resume from checkpoint is working with this Trainer
 
     # Save run metadata to the logger -- using the fact that the log_hyperparams method can take

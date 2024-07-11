@@ -38,19 +38,33 @@ def restore_params_from_mlflow_run(mlflow_run: pd.Series):
     return params
 
 
-def search_runs_by_params(experiment_name: str, params: dict) -> pd.DataFrame:
-    """Query the MLflow server for runs in the specified experiment that match the given parameters.
-    """
+def search_runs_by_params(
+    experiment_name: str,
+    params: dict,
+    tracking_uri: Optional[str | Path] = None,
+    finished_only: bool = True,
+) -> pd.DataFrame:
+    """Query the MLflow server for runs in the specified experiment that match the given parameters."""
     flattened_params = dict(iter_flatten_dict(params, join_op="/".join))
-    queries = {f"params.`{k}`": v for k, v in flattened_params.items()}
-    query_string = " and ".join([f"{k} = '{v}'" for k, v in queries.items()])
+    query_parts = [f"params.`{k}` = '{v}'" for k, v in flattened_params.items() if v is not None]
+    if finished_only:
+        query_parts.append("status = 'FINISHED'")
+    query_string = " and ".join(query_parts)
+    if tracking_uri:
+        mlflow.set_tracking_uri(tracking_uri)
     return mlflow.search_runs(experiment_names=[experiment_name], filter_string=query_string)
 
 
-def search_single_run_by_params(experiment_name: str, params: dict) -> pd.Series:
+def search_single_run_by_params(
+    experiment_name: str,
+    params: dict,
+    tracking_uri: Optional[str | Path] = None,
+    finished_only: bool = True,
+) -> pd.Series:
     """Query the MLflow server for runs in the specified experiment that match the given parameters.
+    If exactly one run is found, return it. If no runs or multiple runs are found, raise an error.
     """
-    df = search_runs_by_params(experiment_name, params)
+    df = search_runs_by_params(experiment_name, params, tracking_uri, finished_only)
     if len(df) == 0:
         raise ValueError("No runs found with the specified parameters")
     elif len(df) > 1:
