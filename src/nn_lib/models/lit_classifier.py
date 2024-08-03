@@ -11,6 +11,7 @@ class LitClassifier(lit.LightningModule):
     """A simple classification class. Provided with a GraphModule architecture, this class wraps it
     in a LightningModule to train it using some standard training logic.
     """
+    __metafields__ = frozenset()
 
     def __init__(
         self,

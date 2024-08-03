@@ -7,6 +7,8 @@ from abc import ABCMeta, abstractmethod
 
 
 class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
+    __metafields__ = frozenset({"root_dir", "num_workers"})
+
     def __init__(
         self,
         root_dir: str = "data",

@@ -2,4 +2,3 @@ data:
   class_path: nn_lib.datasets.CIFAR10DataModule
   init_args:
       batch_size: 128
-      root_dir: null

@@ -4,6 +4,7 @@ trainer:
   accelerator: auto
   devices: auto
   strategy: auto
+  fast_dev_run: false
 env:
   mlflow_tracking_uri: mlruns
   data_root: data

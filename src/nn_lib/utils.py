@@ -5,7 +5,12 @@ import mlflow
 import importlib
 import inspect
 from pathlib import Path
-from typing import Optional, Callable, Generator, Tuple, Any
+from typing import Optional, Callable, Generator, Tuple, Any, TypeVar, Iterable, Union
+
+
+T = TypeVar("T")
+K = TypeVar("K")
+J = TypeVar("J")
 
 
 def restore_params_from_mlflow_run(mlflow_run: pd.Series):
@@ -41,11 +46,12 @@ def restore_params_from_mlflow_run(mlflow_run: pd.Series):
 def search_runs_by_params(
     experiment_name: str,
     params: dict,
-    tracking_uri: Optional[str | Path] = None,
+    tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
+    meta_fields: Optional[dict] = None,
 ) -> pd.DataFrame:
     """Query the MLflow server for runs in the specified experiment that match the given parameters."""
-    flattened_params = dict(iter_flatten_dict(params, join_op="/".join))
+    flattened_params = dict(iter_flatten_dict(params, join_op="/".join, skip_keys=meta_fields))
     query_parts = [f"params.`{k}` = '{v}'" for k, v in flattened_params.items() if v is not None]
     if finished_only:
         query_parts.append("status = 'FINISHED'")
@@ -58,7 +64,7 @@ def search_runs_by_params(
 def search_single_run_by_params(
     experiment_name: str,
     params: dict,
-    tracking_uri: Optional[str | Path] = None,
+    tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
 ) -> pd.Series:
     """Query the MLflow server for runs in the specified experiment that match the given parameters.
@@ -97,7 +103,7 @@ def instantiate(model_class: str, init_args: dict) -> object:
     return cls(**init_args)
 
 
-def _iter_files(path: Path | str):
+def _iter_files(path: Union[Path, str]):
     # TODO - this is using path traversal when we should probably be using the MLflow API (I tried,
     #  but mlflow.artifacts.list_artifacts() gave inconsistently formatted paths.)
     for file in Path(path).iterdir():
@@ -136,15 +142,24 @@ def restore_data_from_mlflow_run(run: pd.Series):
 
 
 def iter_flatten_dict(
-    d: dict, join_op: Callable, prefix=tuple()
+    d: dict[K, Any],
+    join_op: Callable[[tuple[K, ...]], J],
+    prefix: Tuple[K, ...] = tuple(),
+    skip_keys: Optional[Union[Iterable[K], dict[K, Any]]] = None,
 ) -> Generator[Tuple[str, Any], None, None]:
     """Iterate a nested dict in order, yielding (k1k2k3, v) from a dict like {k1: {k2: {k3: v}}}.
     Uses the given join_op to join keys together. In this example, join_op(k1, k2, k3) should
     return k1k2k3
     """
+    skip_keys = skip_keys or {}
     for k, v in d.items():
+        if k in skip_keys and not isinstance(skip_keys, dict):
+            continue
         new_prefix = prefix + (k,)
         if type(v) is dict:
-            yield from iter_flatten_dict(v, join_op, new_prefix)
+            yield from iter_flatten_dict(
+                v, join_op, new_prefix, skip_keys[k] if k in skip_keys else None
+            )
         else:
-            yield join_op(new_prefix), v
+            joined_key = join_op(new_prefix)
+            yield joined_key, v
