@@ -1,50 +1,11 @@
 import lightning as lit
-from nn_lib.models import LitClassifier
-from nn_lib.datasets import TorchvisionDataModuleBase
+from nn_lib.models import add_parser as add_model_parser
+from nn_lib.datasets import add_parser as add_data_parser
+from nn_lib.env import add_parser as add_env_parser
+from nn_lib.trainer import add_parser as add_trainer_parser
 from nn_lib.utils import search_runs_by_params
 from lightning.pytorch.loggers import MLFlowLogger
-from typing import Optional
-from dataclasses import dataclass
 import jsonargparse
-
-
-class Trainer(lit.Trainer):
-    __metafields__ = frozenset({
-        "accelerator",
-        "strategy",
-        "devices",
-        "fast_dev_run",
-        "num_nodes",
-        "precision",
-        "logger",
-        "callbacks",
-        "num_sanity_val_steps",
-        "log_every_n_steps",
-        "enable_checkpointing",
-        "enable_progress_bar",
-        "enable_model_summary",
-        "deterministic",
-        "benchmark",
-        "inference_mode",
-        "use_distributed_sampler",
-        "profiler",
-        "detect_anomaly",
-        "barebones",
-        "plugins",
-        "sync_batchnorm",
-        "reload_dataloaders_every_n_epochs",
-        "default_root_dir",
-    })
-
-
-@dataclass
-class EnvConfig:
-    """Local environment configuration."""
-
-    __metafields__ = frozenset({"mlflow_tracking_uri", "data_root"})
-
-    mlflow_tracking_uri: Optional[str] = None
-    data_root: Optional[str] = None
 
 
 def main(args: jsonargparse.Namespace, artifacts: dict[str, str] = None):
@@ -77,11 +38,10 @@ def main(args: jsonargparse.Namespace, artifacts: dict[str, str] = None):
 if __name__ == "__main__":
     parser = jsonargparse.ArgumentParser(default_config_files=["configs/local_config.yaml"])
     parser.add_argument("--expt_name", type=str, required=True)
-    parser.add_subclass_arguments(LitClassifier, nested_key="model", required=True)
-    parser.add_subclass_arguments(TorchvisionDataModuleBase, nested_key="data", required=True)
-    parser.add_class_arguments(Trainer, nested_key="trainer", instantiate=False, skip={"logger"})
-    parser.add_class_arguments(EnvConfig, nested_key="env")
-    parser.link_arguments("env.data_root", "data.init_args.root_dir", apply_on="parse")
+    add_env_parser(parser)
+    add_model_parser(parser)
+    add_data_parser(parser)
+    add_trainer_parser(parser)
     parser.add_argument("--config", action="config")
     args = parser.parse_args()
 
@@ -96,12 +56,7 @@ if __name__ == "__main__":
         experiment_name=args.expt_name,
         params=args.as_dict(),
         tracking_uri=args.env.mlflow_tracking_uri,
-        meta_fields={
-            "model": {"init_args": LitClassifier.__metafields__},
-            "data": {"init_args": TorchvisionDataModuleBase.__metafields__},
-            "trainer": Trainer.__metafields__,
-            "env": EnvConfig.__metafields__,
-        },
+        meta_fields=getattr(parser, "metafields", {})
     )
     if len(search_results) > 0:
         print("A run with the same hyperparameters already exists. Skipping training.")
