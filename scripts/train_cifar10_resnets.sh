@@ -11,18 +11,19 @@ python -c "import nn_lib" 2>/dev/null || (echo "Put nn_lib on the PYTHONPATH or 
 
 WIDTHS=(16 32 64 128)
 DEPTHS=(20 32 44 56 110)
-LABEL_SMOOTHING=("0.0" "0.1")
+LABEL_SMOOTHING="0.01"
+EXPT_NAME="cifar10-resnets"
 
 for depth in "${DEPTHS[@]}"; do
     for width in "${WIDTHS[@]}"; do
-      for ls in "${LABEL_SMOOTHING[@]}"; do
         echo "Training ResNet-${depth} with width ${width} and label smoothing ${ls}"
         python -m train \
-          --expt_name="cifar10-debug" \
+          --expt_name=$EXPT_NAME \
           --config configs/data/cifar10.yaml \
-          --config configs/model/cifar10_resnet.yaml \
           --config configs/trainer/classification.yaml \
-          --model.depth="${depth}" --model.width="${width}" --model.label_smoothing="${ls}" || exit 1
-    done
+          --config configs/model/cifar10_resnet.yaml \
+          --model.depth="${depth}" \
+          --model.width="${width}" \
+          --model.label_smoothing=$LABEL_SMOOTHING || exit 1
   done
 done
