@@ -1,2 +1,3 @@
 trainer:
   max_epochs: 100
+  tune_lr: True
