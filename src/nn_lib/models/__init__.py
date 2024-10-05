@@ -1,5 +1,6 @@
 from .lit_classifier import LitClassifier
 from .resnet import ResNet
+from .graph_module import GraphModule
 from jsonargparse import ArgumentParser
 
 

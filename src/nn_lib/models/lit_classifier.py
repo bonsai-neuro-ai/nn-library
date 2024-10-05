@@ -5,6 +5,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchmetrics import Accuracy
+from typing import Iterable, Optional
 
 
 class LitClassifier(lit.LightningModule):
@@ -17,20 +18,23 @@ class LitClassifier(lit.LightningModule):
         self,
         architecture: ModelType,
         num_classes: int,
-        last_layer_name: str,
         label_smoothing: float = 0.0,
+        inputs: Optional[Iterable[str]] = None,
+        outputs: Optional[Iterable[str]] = None,
+        lr: float = 1e-3,
     ):
         super().__init__()
-        self.model = GraphModule(architecture)
+        self.model = GraphModule(architecture, inputs=inputs, outputs=outputs)
         self.loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         self.metrics = {
             "acc": Accuracy("multiclass", num_classes=num_classes),
             "raw_ce": nn.CrossEntropyLoss(),
         }
-        self._last_layer_name = last_layer_name
+        self._last_layer_name = self.model.outputs[-1]
+        self.lr = lr
 
-    def forward(self, x):
-        return self.model(x)
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
 
     def to(self, device):
         out = super().to(device)
@@ -60,7 +64,7 @@ class LitClassifier(lit.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        opt = AdamW(self.parameters(), lr=1e-3)
+        opt = AdamW([p for p in self.parameters() if p.requires_grad], lr=self.lr)
         sched = ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=3, min_lr=1e-6)
         return {
             "optimizer": opt,

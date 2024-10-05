@@ -57,8 +57,9 @@ class ResNet(LitClassifier):
         super().__init__(
             architecture=ResNet.get_architecture(depth, width, num_classes),
             num_classes=num_classes,
-            last_layer_name="fc",
             label_smoothing=label_smoothing,
+            inputs=["input"],
+            outputs=["fc"],
         )
 
     @staticmethod
