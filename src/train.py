@@ -38,6 +38,8 @@ def main(args: jsonargparse.Namespace, artifacts: dict[str, str] = None):
         tmp_trainer_args["devices"] = 1
         tmp_trainer = lit.Trainer(logger=logger, **tmp_trainer_args)
         tuner = Tuner(tmp_trainer)
+        # TODO – this lr_find method appears to mark the mlflow run as finished. This is a bug and
+        #  is causing other esoteric issues especially in distributed training.
         tuner.lr_find(
             model=instantiated_args.model, datamodule=instantiated_args.data, update_attr=True
         )
