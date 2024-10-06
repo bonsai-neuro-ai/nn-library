@@ -38,14 +38,6 @@ def add_parser(parser: ArgumentParser, key: str = "trainer"):
         skip=Trainer.__skipfields__,  # type: ignore
     )
 
-    # Add a custom argument to flag whether auto-tuning the LR should be done before training
-    parser.add_argument(
-        f"--{key}.tune_lr",
-        action="store_true",
-        default=False,
-        help="Flag to enable auto-tuning tne LR before training",
-    )
-
     # Create/update 'metafields' attribute on the parser
     meta = getattr(parser, "metafields", {})
     meta.update({key: Trainer.__metafields__})
