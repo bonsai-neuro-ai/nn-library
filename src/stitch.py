@@ -162,7 +162,7 @@ if __name__ == "__main__":
         if args.stage in ["random_init", "regression_init"]:
             # There is no dependency on trainer params for these stages, so we should load any
             # prior run regardless of trainer params
-            skip_fields["trainer"] = True
+            skip_fields["trainer"] = None
         prev_stage_run = search_single_run_by_params(
             experiment_name=args.expt_name,
             params=params,
