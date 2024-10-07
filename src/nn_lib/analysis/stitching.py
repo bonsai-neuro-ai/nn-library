@@ -3,7 +3,9 @@ import torch.nn.functional as F
 import torch
 from nn_lib.models import LitClassifier
 from contextlib import contextmanager
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Mapping, Any
+from typing import Union, Sequence
+import lightning as lit
 
 
 class Conv1x1StitchingLayer(nn.Module):
@@ -169,3 +171,18 @@ class Conv1x1StitchingModel(LitClassifier):
         for name, param in self.named_parameters():
             if all(pattern not in name for pattern in except_pattern):
                 param.requires_grad_(restore.get(name, True))
+
+    def state_dict(self, include_original_parts: bool = False, **kwargs):
+        state = super().state_dict(**kwargs)
+        if include_original_parts:
+            for name, part in self.original_model_parts.items():
+                state[name] = part.state_dict(**kwargs)
+        return state
+
+    def load_state_dict(
+        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
+    ):
+        for name, part in self.original_model_parts.items():
+            if name in state_dict:
+                part.load_state_dict(state_dict.pop(name), strict=strict, assign=assign)
+        super().load_state_dict(state_dict, strict=strict, assign=assign)
