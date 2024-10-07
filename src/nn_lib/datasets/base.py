@@ -26,6 +26,16 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         self.train_ds_split, self.val_ds_split, self.test_ds = None, None, None
 
     @property
+    @abstractmethod
+    def shape(self):
+        pass
+
+    @property
+    @abstractmethod
+    def name(self):
+        pass
+
+    @property
     def metadata(self):
         metadata_file = os.path.join(self.data_dir, "metadata.pkl")
         if not os.path.exists(metadata_file):

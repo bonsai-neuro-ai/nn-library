@@ -22,6 +22,9 @@ class Trainer(lit.Trainer):
             "plugins",
             "sync_batchnorm",
             "reload_dataloaders_every_n_epochs",
+            # TODO - consider enabling default_root_dir as a parameter and linking to env.
+            #  Currently, ModelCheckpoints are saved in user home directory by default,
+            #  adding clutter.
             "default_root_dir",
         }
     )

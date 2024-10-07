@@ -6,6 +6,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchmetrics import Accuracy
 from typing import Iterable, Optional
+from typing import Union, Sequence
 
 
 class LitClassifier(lit.LightningModule):
@@ -33,6 +34,9 @@ class LitClassifier(lit.LightningModule):
         self._last_layer_name = self.model.outputs[-1]
         self.lr = lr
 
+        # TODO - safely save hyperparameters. Maybe the fix is in GraphModule?
+        # self.save_hyperparameters()
+
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
 
@@ -52,7 +56,7 @@ class LitClassifier(lit.LightningModule):
         return loss
 
     def on_train_epoch_start(self):
-        self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"])
+        self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], sync_dist=True)
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
@@ -61,6 +65,15 @@ class LitClassifier(lit.LightningModule):
         self.log("val_loss", loss, sync_dist=True)
         for name, metric in self.metrics.items():
             self.log(f"val_{name}", metric(y_hat, y), sync_dist=True)
+        return loss
+
+    def test_step(self, batch, batch_idx):
+        x, y = batch
+        y_hat = self(x)[self._last_layer_name]
+        loss = self.loss(y_hat, y)
+        self.log("test_loss", loss, sync_dist=True)
+        for name, metric in self.metrics.items():
+            self.log(f"test_{name}", metric(y_hat, y), sync_dist=True)
         return loss
 
     def configure_optimizers(self):
@@ -76,7 +89,7 @@ class LitClassifier(lit.LightningModule):
             },
         }
 
-    def configure_callbacks(self):
+    def configure_callbacks(self) -> Union[Sequence[lit.Callback], lit.Callback]:
         # Note: important that EarlyStopping patience is larger than ReduceLROnPlateau patience
         # so that the model has a chance to recover from a learning rate drop
         return [
