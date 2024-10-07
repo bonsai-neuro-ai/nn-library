@@ -174,9 +174,7 @@ if __name__ == "__main__":
 
     # Log using MLFlow. Each stage of Stitching will be logged as a separate run. However, each
     # run must be instantiated from the results of the prior stage.
-    logger = MLFlowLogger(
-        experiment_name=args.expt_name, tracking_uri=args.env.mlflow_tracking_uri, log_model=True
-    )
+    logger = MLFlowLogger(experiment_name=args.expt_name, tracking_uri=args.env.mlflow_tracking_uri)
 
     # Save run metadata to the logger -- using the fact that the log_hyperparams method can take
     # a namespace object directly, and we have a namespace object for MainConfig.
