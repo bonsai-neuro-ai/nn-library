@@ -48,10 +48,11 @@ def search_runs_by_params(
     params: dict,
     tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
-    meta_fields: Optional[dict] = None,
+    skip_fields: Optional[dict] = None,
 ) -> pd.DataFrame:
-    """Query the MLflow server for runs in the specified experiment that match the given parameters."""
-    flattened_params = dict(iter_flatten_dict(params, join_op="/".join, skip_keys=meta_fields))
+    """Query the MLflow server for runs in the specified experiment that match the given
+    parameters. Any keys of the `meta_fields` dictionary will be excluded from the search."""
+    flattened_params = dict(iter_flatten_dict(params, join_op="/".join, skip_keys=skip_fields))
     query_parts = [f"params.`{k}` = '{v}'" for k, v in flattened_params.items() if v is not None]
     if finished_only:
         query_parts.append("status = 'FINISHED'")
@@ -66,11 +67,12 @@ def search_single_run_by_params(
     params: dict,
     tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
+    skip_fields: Optional[dict] = None,
 ) -> pd.Series:
     """Query the MLflow server for runs in the specified experiment that match the given parameters.
     If exactly one run is found, return it. If no runs or multiple runs are found, raise an error.
     """
-    df = search_runs_by_params(experiment_name, params, tracking_uri, finished_only)
+    df = search_runs_by_params(experiment_name, params, tracking_uri, finished_only, skip_fields)
     if len(df) == 0:
         raise ValueError("No runs found with the specified parameters")
     elif len(df) > 1:

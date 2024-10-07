@@ -54,9 +54,13 @@ if __name__ == "__main__":
     # Search existing runs to see if a run with the same hyperparameters has already been done.
     search_results = search_runs_by_params(
         experiment_name=args.expt_name,
-        params=args.as_dict(),
+        params={
+            "model": args.model.as_dict(),
+            "data": args.data.as_dict(),
+            "trainer": args.trainer.as_dict(),
+        },
         tracking_uri=args.env.mlflow_tracking_uri,
-        meta_fields=getattr(parser, "metafields", {}),
+        skip_fields=getattr(parser, "metafields", {}),
     )
     if len(search_results) > 0:
         print("A run with the same hyperparameters already exists. Skipping training.")
