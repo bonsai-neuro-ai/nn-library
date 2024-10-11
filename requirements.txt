@@ -3,8 +3,10 @@ lightning[pytorch-extra]
 matplotlib
 mlflow
 numpy
+pandas
 parse
 pydot
+seaborn
 torch
 torchmetrics
 torchvision
