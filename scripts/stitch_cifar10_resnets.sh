@@ -45,9 +45,9 @@ LAYERS2=(
   "block019/relu"
   "block020/relu"
 )
-STAGES=("random_init" "regression_init" "train_stitching_layer" "train_stitching_layer_and_downstream")
+STAGES=("RANDOM_INIT" "REGRESSION_INIT" "TRAIN_STITCHING_LAYER" "TRAIN_STITCHING_LAYER_AND_DOWNSTREAM")
 MODEL_EXPT_NAME="cifar10-resnets"
-EXPT_NAME="stitch-debug"
+EXPT_NAME="stitch-debug-v2"
 
 for layer1 in "${LAYERS1[@]}"; do
   for layer2 in "${LAYERS2[@]}"; do

@@ -1,7 +1,5 @@
 import lightning as lit
-from pyarrow.tests.test_extension_type import example_batch
-
-from nn_lib.models import add_parser as add_model_parser, LitClassifier
+from nn_lib.models import add_parser as add_model_parser
 from nn_lib.datasets import add_parser as add_data_parser, TorchvisionDataModuleBase
 from nn_lib.env import add_parser as add_env_parser
 from nn_lib.trainer import add_parser as add_trainer_parser
@@ -16,6 +14,8 @@ from pathlib import Path
 import torch
 import jsonargparse
 import tempfile
+from enum import Enum
+from typing import Optional, assert_never
 
 
 def save_as_artifact(obj: object, path: Path, logger: MLFlowLogger):
@@ -28,44 +28,51 @@ def save_as_artifact(obj: object, path: Path, logger: MLFlowLogger):
         )
 
 
-STAGES_DEPENDENCIES = {
-    "random_init": None,
-    "regression_init": "random_init",
-    "train_stitching_layer": "regression_init",
-    "train_stitching_layer_and_downstream": "regression_init",
+class StitchingStage(Enum):
+    RANDOM_INIT = "random_init"
+    REGRESSION_INIT = "regression_init"
+    TRAIN_STITCHING_LAYER = "train_stitching_layer"
+    TRAIN_STITCHING_LAYER_AND_DOWNSTREAM = "train_stitching_layer_and_downstream"
+
+
+STAGES_DEPENDENCIES: dict[StitchingStage, Optional[StitchingStage]] = {
+    StitchingStage.RANDOM_INIT: None,
+    StitchingStage.REGRESSION_INIT: StitchingStage.RANDOM_INIT,
+    StitchingStage.TRAIN_STITCHING_LAYER: StitchingStage.REGRESSION_INIT,
+    StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM: StitchingStage.REGRESSION_INIT,
 }
 
 
-def main(
-    stage: str,
+def analyze_stage(
+    stage: StitchingStage,
     model: Conv1x1StitchingModel,
     datamodule: TorchvisionDataModuleBase,
     trainer: lit.Trainer,
     logger: MLFlowLogger,
 ):
-
-    if stage == "random_init":
-        pass
-    elif stage == "regression_init":
-        datamodule.setup("fit")
-        example_batch = next(iter(datamodule.train_dataloader()))
-        model.initialize(example_batch)
-    elif stage == "train_stitching_layer":
-        with stitched_model.freeze_all_except(["stitching_layer"]):
-            trainer.fit(model, datamodule)
+    match stage:
+        case StitchingStage.RANDOM_INIT:
+            pass
+        case StitchingStage.REGRESSION_INIT:
+            datamodule.setup("fit")
+            example_batch = next(iter(datamodule.train_dataloader()))
+            model.initialize(example_batch)
+        case StitchingStage.TRAIN_STITCHING_LAYER:
+            with stitched_model.freeze_all_except(["stitching_layer"]):
+                trainer.fit(model, datamodule)
             # Load the best checkpoint from fitting for snapshotting below
             model.load_state_dict(
                 torch.load(trainer.checkpoint_callback.best_model_path)["state_dict"]
             )
-    elif stage == "train_stitching_layer_and_downstream":
-        with stitched_model.freeze_all_except(["stitching_layer", "model2"]):
-            trainer.fit(model, datamodule)
+        case StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM:
+            with stitched_model.freeze_all_except(["stitching_layer", "model2"]):
+                trainer.fit(model, datamodule)
             # Load the best checkpoint from fitting for snapshotting below
             model.load_state_dict(
                 torch.load(trainer.checkpoint_callback.best_model_path)["state_dict"]
             )
-    else:
-        raise ValueError(f"Unknown stage {stage}; must be one of {STAGES_DEPENDENCIES.keys()}")
+        case _:
+            assert_never(stage)
 
     # Take a snapshot of model performance on the test set
     with torch.no_grad():
@@ -73,6 +80,26 @@ def main(
         metrics = dict(trainer.test(model, datamodule.test_dataloader())[0])
         metrics["state_dict"] = model.state_dict()
         save_as_artifact(metrics, Path("snapshot.pt"), logger)
+
+
+def maybe_restore_prior_stage(args: jsonargparse.Namespace, stitched_model: Conv1x1StitchingModel):
+    prior_stage = STAGES_DEPENDENCIES[args.stage]
+    if prior_stage is not None:
+        params = args.as_dict()
+        params["stage"] = prior_stage
+        skip_fields = getattr(parser, "metafields", {})
+        if args.stage in ["random_init", "regression_init"]:
+            # There is no dependency on trainer params for these stages, so we should load any
+            # prior run regardless of trainer params
+            skip_fields["trainer"] = None
+        prev_stage_run = search_single_run_by_params(
+            experiment_name=args.expt_name,
+            params=params,
+            tracking_uri=args.env.mlflow_tracking_uri,
+            skip_fields=skip_fields,
+        )
+        prior_state = torch.load(prev_stage_run["artifact_uri"] + "/snapshot.pt")
+        stitched_model.load_state_dict(prior_state["state_dict"])
 
 
 if __name__ == "__main__":
@@ -96,7 +123,7 @@ if __name__ == "__main__":
     )
     add_data_parser(parser)
     add_trainer_parser(parser)
-    parser.add_argument("--stage", type=str, required=True, choices=STAGES_DEPENDENCIES.keys())
+    parser.add_argument("--stage", type=StitchingStage, required=True)
     parser.add_argument("--config", action="config")
     args = parser.parse_args()
 
@@ -154,26 +181,10 @@ if __name__ == "__main__":
     )
 
     # If required, load state from previous stage
-    prior_stage = STAGES_DEPENDENCIES[args.stage]
-    if prior_stage is not None:
-        params = args.as_dict()
-        params["stage"] = prior_stage
-        skip_fields = getattr(parser, "metafields", {})
-        if args.stage in ["random_init", "regression_init"]:
-            # There is no dependency on trainer params for these stages, so we should load any
-            # prior run regardless of trainer params
-            skip_fields["trainer"] = None
-        prev_stage_run = search_single_run_by_params(
-            experiment_name=args.expt_name,
-            params=params,
-            tracking_uri=args.env.mlflow_tracking_uri,
-            skip_fields=skip_fields,
-        )
-        prior_state = torch.load(prev_stage_run["artifact_uri"] + "/snapshot.pt")
-        stitched_model.load_state_dict(prior_state["state_dict"])
+    maybe_restore_prior_stage(args, stitched_model)
 
-    # Log using MLFlow. Each stage of Stitching will be logged as a separate run. However, each
-    # run must be instantiated from the results of the prior stage.
+    # Log using MLFlow. Each stage of Stitching will be logged as a separate run (due to
+    # log_hyperparams and the fact that the stage is an arg)
     logger = MLFlowLogger(experiment_name=args.expt_name, tracking_uri=args.env.mlflow_tracking_uri)
 
     # Save run metadata to the logger -- using the fact that the log_hyperparams method can take
@@ -187,7 +198,7 @@ if __name__ == "__main__":
 
     trainer = lit.Trainer(logger=logger, **args.trainer)
 
-    main(
+    analyze_stage(
         args.stage,
         stitched_model,
         datamodule,
