@@ -11,8 +11,40 @@ python -c "import nn_lib" 2>/dev/null || (echo "Put nn_lib on the PYTHONPATH or 
 
 MODEL1_ARGS="--model1.depth=20 --model1.width=32 --model1.label_smoothing=0.01"
 MODEL2_ARGS="--model2.depth=44 --model2.width=16 --model2.label_smoothing=0.01"
-LAYERS1=("block000/relu" "block001/relu" "block002/relu" "block003/relu" "block004/relu" "block005/relu")
-LAYERS2=("block000/relu" "block001/relu" "block002/relu" "block003/relu" "block004/relu" "block005/relu")
+LAYERS1=(
+  "block000/relu"
+  "block001/relu"
+  "block002/relu"
+  "block003/relu"
+  "block004/relu"
+  "block005/relu"
+  "block006/relu"
+  "block007/relu"
+  "block008/relu"
+)
+LAYERS2=(
+  "block000/relu"
+  "block001/relu"
+  "block002/relu"
+  "block003/relu"
+  "block004/relu"
+  "block005/relu"
+  "block006/relu"
+  "block007/relu"
+  "block008/relu"
+  "block009/relu"
+  "block010/relu"
+  "block011/relu"
+  "block012/relu"
+  "block013/relu"
+  "block014/relu"
+  "block015/relu"
+  "block016/relu"
+  "block017/relu"
+  "block018/relu"
+  "block019/relu"
+  "block020/relu"
+)
 STAGES=("random_init" "regression_init" "train_stitching_layer" "train_stitching_layer_and_downstream")
 MODEL_EXPT_NAME="cifar10-resnets"
 EXPT_NAME="stitch-debug"
