@@ -4,8 +4,6 @@ import torch
 from nn_lib.models import LitClassifier
 from contextlib import contextmanager
 from typing import Iterable, Optional, Mapping, Any
-from typing import Union, Sequence
-import lightning as lit
 
 
 class Conv1x1StitchingLayer(nn.Module):
@@ -141,6 +139,32 @@ class Conv1x1StitchingModel(LitClassifier):
             "model2_part1": model2_part1,
             "model2_part2": model2_part2,
         }
+
+    def _recreate_model_from_parts(self, part1: LitClassifier, part2: LitClassifier):
+        arch = {**part1.graph, **part2.graph}
+        split_layer = part2.inputs[0]
+        arch[split_layer] = part1[split_layer]
+        return LitClassifier(
+            architecture=arch,
+            inputs=part1.inputs,
+            outputs=part2.outputs,
+            num_classes=self.num_classes,
+            label_smoothing=self.loss.label_smoothing,
+        )
+
+    @property
+    def model1(self) -> LitClassifier:
+        return self._recreate_model_from_parts(
+            self.original_model_parts["model1_part1"],
+            self.original_model_parts["model1_part2"],
+        )
+
+    @property
+    def model2(self) -> LitClassifier:
+        return self._recreate_model_from_parts(
+            self.original_model_parts["model2_part1"],
+            self.original_model_parts["model2_part2"],
+        )
 
     def initialize(self, initial_inputs: torch.Tensor):
         with torch.no_grad():

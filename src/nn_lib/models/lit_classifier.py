@@ -33,6 +33,7 @@ class LitClassifier(lit.LightningModule):
         }
         self._last_layer_name = self.model.outputs[-1]
         self.lr = lr
+        self.num_classes = num_classes
 
         # TODO - safely save hyperparameters. Maybe the fix is in GraphModule?
         # self.save_hyperparameters()

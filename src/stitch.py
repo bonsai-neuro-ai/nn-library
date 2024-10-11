@@ -79,6 +79,8 @@ def analyze_stage(
         datamodule.setup("test")
         metrics = dict(trainer.test(model, datamodule.test_dataloader())[0])
         metrics["state_dict"] = model.state_dict()
+        metrics["model1"] = dict(trainer.test(model.model1, datamodule.test_dataloader())[0])
+        metrics["model2"] = dict(trainer.test(model.model2, datamodule.test_dataloader())[0])
         save_as_artifact(metrics, Path("snapshot.pt"), logger)
 
 
