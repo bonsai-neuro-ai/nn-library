@@ -9,8 +9,8 @@ fi
 # Run this from the project root!
 python -c "import nn_lib" 2>/dev/null || (echo "Put nn_lib on the PYTHONPATH or run from nn-library/src" && exit 1)
 
-MODEL1_ARGS="--model1.depth=20 --model1.width=32 --model1.label_smoothing=0.01"
-MODEL2_ARGS="--model2.depth=44 --model2.width=16 --model2.label_smoothing=0.01"
+MODEL1_ARGS="--model.model1.depth=20 --model.model1.width=32 --model.model1.label_smoothing=0.01"
+MODEL2_ARGS="--model.model2.depth=44 --model.model2.width=16 --model.model2.label_smoothing=0.01"
 LAYERS1=(
   "block000/relu"
   "block001/relu"
@@ -45,7 +45,12 @@ LAYERS2=(
   "block019/relu"
   "block020/relu"
 )
-STAGES=("RANDOM_INIT" "REGRESSION_INIT" "TRAIN_STITCHING_LAYER" "TRAIN_STITCHING_LAYER_AND_DOWNSTREAM")
+STAGES=(
+  "RANDOM_INIT"
+  "REGRESSION_INIT"
+  "TRAIN_STITCHING_LAYER"
+  "TRAIN_STITCHING_LAYER_AND_DOWNSTREAM"
+)
 MODEL_EXPT_NAME="cifar10-resnets"
 EXPT_NAME="stitch-debug"
 
@@ -61,9 +66,9 @@ for layer1 in "${LAYERS1[@]}"; do
         --config=configs/data/cifar10.yaml \
         --config=configs/model/stitch_cifar10_resnets.yaml \
         ${MODEL1_ARGS} \
-        --model1_layer_name="${layer1}" \
+        --model.layer1="${layer1}" \
         ${MODEL2_ARGS} \
-        --model2_layer_name="${layer2}" \
+        --model.layer2="${layer2}" \
         --stage="${stage}" || exit 1
     done
   done
