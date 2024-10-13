@@ -178,6 +178,9 @@ class Conv1x1StitchingModel(LitClassifier):
         )
 
     def initialize(self, initial_inputs: torch.Tensor):
+        # Put model into eval mode to disable dropout, batchnorm, etc. for the purposes of finding
+        # good alignment between model1 and model2 parts.
+        self.eval()
         with torch.no_grad():
             m1p1 = self.original_model_parts["model1_part1"]
             m2p1 = self.original_model_parts["model2_part1"]
@@ -199,6 +202,12 @@ class Conv1x1StitchingModel(LitClassifier):
                 restore[name] = param.requires_grad
                 param.requires_grad_(False)
 
+        # Also ensure that all BatchNorm layers are in eval mode
+        for name, module in self.named_modules():
+            if isinstance(module, nn.BatchNorm2d):
+                restore[f"{name}.training"] = module.training
+                module.eval()
+
         yield
 
         # Restore the requires_grad values
@@ -206,6 +215,11 @@ class Conv1x1StitchingModel(LitClassifier):
         for name, param in self.named_parameters():
             if all(pattern not in name for pattern in except_pattern):
                 param.requires_grad_(restore.get(name, True))
+
+        # Restore the batchnorm training modes
+        for name, module in self.named_modules():
+            if isinstance(module, nn.BatchNorm2d):
+                module.train(restore.get(f"{name}.training", True))
 
     def state_dict(self, include_original_parts: bool = False, **kwargs):
         state = super().state_dict(**kwargs)
