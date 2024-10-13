@@ -1,11 +1,11 @@
 import torch
-import lightning as lit
 import pandas as pd
 import mlflow
 import importlib
 import inspect
 from pathlib import Path
 from typing import Optional, Callable, Generator, Tuple, Any, TypeVar, Iterable, Union
+from torch import nn
 
 
 T = TypeVar("T")
@@ -83,7 +83,9 @@ def search_single_run_by_params(
     """Query the MLflow server for runs in the specified experiment that match the given parameters.
     If exactly one run is found, return it. If no runs or multiple runs are found, raise an error.
     """
-    df = search_runs_by_params(experiment_name, params, tags, tracking_uri, finished_only, skip_fields)
+    df = search_runs_by_params(
+        experiment_name, params, tags, tracking_uri, finished_only, skip_fields
+    )
     if len(df) == 0:
         raise ValueError("No runs found with the specified parameters")
     elif len(df) > 1:
@@ -145,16 +147,22 @@ def load_checkpoint_from_mlflow_run(
 
 
 def restore_model_from_mlflow_run(
-    run: pd.Series, load_checkpoint: bool = True, device: Optional[str] = None, alias: str = "best"
+    run: pd.Series,
+    load_checkpoint: bool = True,
+    device: Optional[str] = None,
+    alias: str = "best",
+    drop_keys: Optional[Iterable[str]] = None,
 ):
     params_dict = restore_params_from_mlflow_run(run)
     model_class = params_dict["model"]["class_path"]
     init_args = params_dict["model"]["init_args"]
 
-    model: lit.LightningModule = instantiate(model_class, init_args)  # type: ignore
+    model: nn.Module = instantiate(model_class, init_args)  # type: ignore
 
     if load_checkpoint:
         data = load_checkpoint_from_mlflow_run(run, alias=alias, map_location=device)
+        if drop_keys:
+            data["state_dict"] = {k: v for k, v in data["state_dict"].items() if k not in drop_keys}
         model.load_state_dict(data["state_dict"])
 
     return model

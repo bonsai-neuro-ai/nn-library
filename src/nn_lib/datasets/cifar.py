@@ -7,6 +7,7 @@ from torchvision.transforms import Compose, Normalize, RandomHorizontalFlip, Ran
 class CIFAR10DataModule(TorchvisionDataModuleBase):
     name = "cifar10"
     shape = (3, 32, 32)
+    num_classes = 10
 
     @property
     def train_transform(self):
@@ -29,6 +30,7 @@ class CIFAR10DataModule(TorchvisionDataModuleBase):
 class CIFAR100DataModule(TorchvisionDataModuleBase):
     name = "cifar100"
     shape = (3, 32, 32)
+    num_classes = 100
 
     def train_data(self, transform=None):
         return CIFAR100(self.data_dir, train=True, download=True, transform=transform)

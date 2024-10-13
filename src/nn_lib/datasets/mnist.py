@@ -6,6 +6,7 @@ from nn_lib.datasets.base import TorchvisionDataModuleBase
 class MNISTDataModule(TorchvisionDataModuleBase):
     name = "mnist"
     shape = (1, 28, 28)
+    num_classes = 10
 
     @property
     def transform(self):

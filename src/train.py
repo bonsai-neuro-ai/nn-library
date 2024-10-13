@@ -1,10 +1,12 @@
 import lightning as lit
 from nn_lib.models import add_parser as add_model_parser
+from nn_lib.models import LitClassifier
 from nn_lib.datasets import add_parser as add_data_parser
 from nn_lib.env import add_parser as add_env_parser
 from nn_lib.trainer import add_parser as add_trainer_parser
 from nn_lib.utils import search_runs_by_params
 from lightning.pytorch.loggers import MLFlowLogger
+from dataclasses import dataclass
 import jsonargparse
 
 
@@ -29,10 +31,17 @@ def main(args: jsonargparse.Namespace, artifacts: dict[str, str] = None):
     # LightningDataModule class.
     instantiated_args = parser.instantiate_classes(args)
 
+    # Take the instantiated model and wrap it in a LitClassifier (LightningModule), including the
+    # classifier-specific arguments.
+    wrapped_model = LitClassifier(
+        model=instantiated_args.model,
+        **{"num_classes": instantiated_args.data.num_classes, **args.classifier.as_dict()},
+    )
+
     # Create the trainer object using our custom logger and set the remaining arguments from the`
     # TrainerConfig.
-    trainer = lit.Trainer(logger=logger, **args.trainer.__dict__)
-    trainer.fit(instantiated_args.model, instantiated_args.data, ckpt_path="last")
+    trainer = lit.Trainer(logger=logger, **args.trainer.as_dict())
+    trainer.fit(wrapped_model, instantiated_args.data, ckpt_path="last")
 
 
 if __name__ == "__main__":
@@ -40,6 +49,9 @@ if __name__ == "__main__":
     parser.add_argument("--expt_name", type=str, required=True)
     add_env_parser(parser)
     add_model_parser(parser)
+    parser.add_class_arguments(
+        LitClassifier, nested_key="classifier", skip={"model", "num_classes"}, instantiate=False
+    )
     add_data_parser(parser)
     add_trainer_parser(parser)
     parser.add_argument("--config", action="config")

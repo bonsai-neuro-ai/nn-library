@@ -1,7 +1,6 @@
 from torch import nn
 from nn_lib.models.utils import Add, Identity
-from nn_lib.models.lit_classifier import LitClassifier
-from nn_lib.models.graph_module import ModelType
+from nn_lib.models.graph_module import ModelType, GraphModule
 import parse
 
 
@@ -43,7 +42,7 @@ def res_block(in_channels: int, out_channels: int, stride: int):
     return block
 
 
-class ResNet(LitClassifier):
+class ResNet(GraphModule):
     """ResNet architecture.
 
     Architecture based on github.com/facebookresearch/open_lth/blob/main/model/resnet.py
@@ -51,15 +50,14 @@ class ResNet(LitClassifier):
 
     NAME_PATTERN = r"resnet{depth}x{width}_{num_classes}"
 
-    def __init__(self, depth: int, width: int, num_classes: int, label_smoothing: float = 0.0):
+    def __init__(self, depth: int, width: int, num_classes: int):
         self.name = ResNet.NAME_PATTERN.format(**locals())
         self.depth, self.width, self.num_classes = depth, width, num_classes
         super().__init__(
             architecture=ResNet.get_architecture(depth, width, num_classes),
-            num_classes=num_classes,
-            label_smoothing=label_smoothing,
             inputs=["input"],
             outputs=["fc"],
+            default_output="fc",
         )
 
     @staticmethod
@@ -100,6 +98,11 @@ class ResNet(LitClassifier):
 
         parts = parse.parse(ResNet.NAME_PATTERN, model_name)
         return ResNet(int(parts["depth"]), int(parts["width"]), int(parts["num_classes"]))
+
+
+__all__ = [
+    "ResNet",
+]
 
 
 if __name__ == "__main__":

@@ -3,7 +3,6 @@ import torch.nn as nn
 from typing import Dict, Tuple, Callable, Union, Any, Iterable, List, Optional, Literal, Generator
 import warnings
 from nn_lib.utils import iter_flatten_dict
-from collections import deque, defaultdict
 
 
 # An 'Operation' is essentially a callable object that behaves like a nn.Module. Use None for
@@ -20,7 +19,8 @@ ModelType = Dict[str, OpWithMaybeInputs]
 # A Graph is a map like {node: (edge, [parents])}, where edge can be Any. Here, edges will be
 # Callables
 GraphType = Dict[str, Tuple[Any, List[str]]]
-
+# Once called, the model might produce a Tensor or a dict of named tensors
+OutputType = Union[torch.Tensor, Dict[str, torch.Tensor]]
 
 INPUT_LAYER = "input"
 
@@ -29,11 +29,18 @@ class GraphModule(nn.Module):
     """A GraphModule is a PyTorch Module specified by a graph of named operations. Implementation
     draws inspiration from https://github.com/davidcpage/cifar10-fast/blob/master/torch_backend.py
 
-    The constructor takes a single 'architecture' argument, which is a nested dict of the form
+    The constructor takes an 'architecture' argument, which is a nested dict of the form
     {
         'layer1': {'step1': op1, 'step2': (op2, 'step1')},
         'layer2': {'step1': op3, 'step2': (op4, 'step1')}
     }
+
+    This specifies a graph of operations, represented internally as a dict mapping from layer names
+    to a tuple of (operation, input layer names).
+
+    The model can be called naming particular outputs to compute, and the forward pass will
+    return a dict of all named outputs, or the model can be called like a normal nn.Module, in which
+    case it will return a tensor from the layer specified by the 'default_output' argument.
     """
 
     def __init__(
@@ -41,6 +48,7 @@ class GraphModule(nn.Module):
         architecture: ModelType,
         inputs: Optional[Iterable[str]] = None,
         outputs: Optional[Iterable[str]] = None,
+        default_output: Optional[str] = None,
     ):
         super(GraphModule, self).__init__()
         # Convert ModelType specification of an architecture into 'flatter' GraphType
@@ -51,11 +59,26 @@ class GraphModule(nn.Module):
             {path: op for path, (op, inpts) in self.graph.items() if isinstance(op, nn.Module)}
         )
         # Save the input name(s) for use in forward(). Defaults to global INPUT_LAYER. Also track
-        # output names (we always return all layers; setting the output layer names is for
-        # bookkeeping and does not change the model behavior). Defaults to the last key in the
-        # architecture dict.
+        # output names, defaulting to the last key in the architecture dict. A default_output can be
+        # specified
         self.inputs = list(inputs) if inputs is not None else [INPUT_LAYER]
         self.outputs = list(outputs) if outputs is not None else list(architecture.keys())[-1:]
+        if default_output is not None:
+            # Ensure default_output is one of the self.outputs
+            if default_output not in self.outputs:
+                warnings.warn(
+                    f"Default output {default_output} not found in the specified outputs! "
+                    f"Adding it."
+                )
+                self.outputs.append(default_output)
+            self.default_output = default_output
+        else:
+            if len(self.outputs) > 1:
+                warnings.warn(
+                    "Multiple outputs specified in the graph, but no default_output specified!"
+                    f"Using {self.outputs[-1]} as the default output."
+                )
+            self.default_output = self.outputs[-1]
 
         # Check that all inputs and outputs are present in the graph
         for input_name in self.inputs:
@@ -70,10 +93,13 @@ class GraphModule(nn.Module):
                     f"No '{output_name}' node in the graph, but it is named as an output!"
                 )
 
+        # Ensure that the graph is in topological order
+        self.reorder_graph()
+
     def reorder_graph(self):
         """Ensure that graph traversal using self.graph.items() is in topological order."""
         new_graph = {}
-        for layer_name in self._traverse_sub_graph(self.inputs, self.layer_names):
+        for layer_name in self._traverse_sub_graph(self.inputs, self.outputs):
             new_graph[layer_name] = self.graph[layer_name]
         self.graph = new_graph
 
@@ -126,7 +152,7 @@ class GraphModule(nn.Module):
         initial_inputs: Union[torch.Tensor, Iterable[torch.Tensor], dict[str, torch.Tensor]],
         named_outputs: Optional[Iterable[str]] = None,
         warn_if_missing: bool = True,
-    ) -> Dict[str, torch.Tensor]:
+    ) -> OutputType:
         """Run the graph forward, starting with the given initial inputs. If named_outputs is
         specified, only compute those outputs and return them as a dict. If warn_if_missing is
         True, a warning will be raised if any layer's inputs are not available in the output dict.
@@ -162,7 +188,11 @@ class GraphModule(nn.Module):
                     f"Skipping {layer_name} because inputs are not available! "
                     f"Calling reorder_graph() could fix this if it's a traversal order issue."
                 )
-        return layer_activations
+
+        if named_outputs is not None:
+            return {name: layer_activations[name] for name in named_outputs}
+        else:
+            return layer_activations[self.default_output]
 
     def _traverse_sub_graph(
         self, inputs: Iterable[str], outputs: Iterable[str]
@@ -198,7 +228,9 @@ class GraphModule(nn.Module):
         for output in outputs:
             yield from visit(output)
 
-    def sub_model(self, inputs: list[str], outputs: list[str]) -> "GraphModule":
+    def sub_model(
+        self, inputs: list[str], outputs: list[str], default_output: Optional[str] = None
+    ) -> "GraphModule":
         """Return a new GraphModule containing the sub-graph mapping from the given inputs to the
         given outputs.
         """
@@ -207,7 +239,7 @@ class GraphModule(nn.Module):
         }
         for inpt in inputs:
             sub_graph[inpt] = None
-        return GraphModule(sub_graph, inputs=inputs, outputs=outputs)
+        return GraphModule(sub_graph, inputs=inputs, outputs=outputs, default_output=default_output)
 
 
 #####################
