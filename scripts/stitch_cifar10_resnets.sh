@@ -62,7 +62,6 @@ for layer1 in "${LAYERS1[@]}"; do
         --expt_name="${EXPT_NAME}" \
         --models_expt_name="${MODEL_EXPT_NAME}" \
         --config=configs/trainer/classification.yaml \
-        --trainer.devices=1 \
         --config=configs/data/cifar10.yaml \
         --config=configs/model/stitch_cifar10_resnets.yaml \
         ${MODEL1_ARGS} \

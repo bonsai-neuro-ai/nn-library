@@ -68,16 +68,26 @@ def analyze_stage(
         case _:
             assert_never(stage)
 
+
+    def re_use_trainer_bugfix():
+        # Bugfix: in order to re-use the same trainer to call test() multiple times, we need to
+        # clear the results of the test loop. Otherwise, the results of the previous test() call
+        # will have messed up devices on the non-rank-0 processes. See here:
+        # https://github.com/Lightning-AI/pytorch-lightning/issues/18803#issuecomment-1839788106
+        trainer.test_loop._results.clear()
+
     # Take a snapshot of model performance on the test set
-    if trainer.is_global_zero:
-        with torch.no_grad():
-            datamodule.setup("test")
-            metrics = dict(trainer.test(model, datamodule.test_dataloader())[0])
-            metrics["state_dict"] = model.state_dict()
-            logger._prefix = "model1"
-            metrics["model1"] = dict(trainer.test(model.model1, datamodule.test_dataloader())[0])
-            logger._prefix = "model2"
-            metrics["model2"] = dict(trainer.test(model.model2, datamodule.test_dataloader())[0])
+    with torch.no_grad():
+        datamodule.setup("test")
+        metrics = dict(trainer.test(model, datamodule.test_dataloader())[0])
+        metrics["state_dict"] = model.state_dict()
+        logger._prefix = "model1"
+        re_use_trainer_bugfix()
+        metrics["model1"] = dict(trainer.test(model.model1, datamodule.test_dataloader())[0])
+        logger._prefix = "model2"
+        re_use_trainer_bugfix()
+        metrics["model2"] = dict(trainer.test(model.model2, datamodule.test_dataloader())[0])
+        if trainer.is_global_zero:
             save_as_artifact(metrics, Path("snapshot.pt"), logger)
 
 
@@ -192,3 +202,4 @@ if __name__ == "__main__":
         logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.SUCCESS)
     except Exception as e:
         logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.ERROR)
+        logger.experiment.log_text(run_id=logger.run_id, text=str(e), artifact_file="error.txt")
