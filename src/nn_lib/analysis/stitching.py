@@ -4,6 +4,7 @@ import torch
 from nn_lib.models import LitClassifier
 from contextlib import contextmanager
 from typing import Iterable, Optional, Mapping, Any
+from enum import Enum, auto
 
 
 class Conv1x1StitchingLayer(nn.Module):
@@ -154,6 +155,11 @@ class Conv1x1StitchingModel(LitClassifier):
 
     @property
     def model1(self) -> LitClassifier:
+        """Recreate the model1 part of the original model. Note that we *want* to return this as a
+        reference to the underlying model parts, not a copy, so that we can do things like
+        stitched_model.model1.load_state_dict(...) and have it update the parameters of the
+        stitched self.model in-place.
+        """
         return self._recreate_model_from_parts(
             self.original_model_parts["model1_part1"],
             self.original_model_parts["model1_part2"],
@@ -161,6 +167,11 @@ class Conv1x1StitchingModel(LitClassifier):
 
     @property
     def model2(self) -> LitClassifier:
+        """Recreate the model2 part of the original model. Note that we *want* to return this as a
+        reference to the underlying model parts, not a copy, so that we can do things like
+        stitched_model.model2.load_state_dict(...) and have it update the parameters of the
+        stitched self.model in-place.
+        """
         return self._recreate_model_from_parts(
             self.original_model_parts["model2_part1"],
             self.original_model_parts["model2_part2"],
@@ -210,3 +221,29 @@ class Conv1x1StitchingModel(LitClassifier):
             if name in state_dict:
                 part.load_state_dict(state_dict.pop(name), strict=strict, assign=assign)
         super().load_state_dict(state_dict, strict=strict, assign=assign)
+
+
+class StitchingStage(Enum):
+    RANDOM_INIT = auto()
+    REGRESSION_INIT = auto()
+    TRAIN_STITCHING_LAYER = auto()
+    TRAIN_STITCHING_LAYER_AND_DOWNSTREAM = auto()
+
+    def __str__(self):
+        return self.name
+
+
+STAGES_DEPENDENCIES: dict[StitchingStage, Optional[StitchingStage]] = {
+    StitchingStage.RANDOM_INIT: None,
+    StitchingStage.REGRESSION_INIT: StitchingStage.RANDOM_INIT,
+    StitchingStage.TRAIN_STITCHING_LAYER: StitchingStage.REGRESSION_INIT,
+    StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM: StitchingStage.REGRESSION_INIT,
+}
+
+
+__all__ = [
+    "Conv1x1StitchingLayer",
+    "Conv1x1StitchingModel",
+    "StitchingStage",
+    "STAGES_DEPENDENCIES",
+]

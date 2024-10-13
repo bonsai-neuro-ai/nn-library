@@ -5,17 +5,17 @@ from nn_lib.env import add_parser as add_env_parser
 from nn_lib.trainer import add_parser as add_trainer_parser
 from nn_lib.utils import (
     search_runs_by_params,
-    restore_model_from_mlflow_run,
     search_single_run_by_params,
+    load_checkpoint_from_mlflow_run,
 )
 from lightning.pytorch.loggers import MLFlowLogger
-from nn_lib.analysis.stitching import Conv1x1StitchingModel
+from nn_lib.analysis.stitching import Conv1x1StitchingModel, StitchingStage, STAGES_DEPENDENCIES
 from pathlib import Path
 import torch
 import jsonargparse
 import tempfile
-from enum import Enum
-from typing import Optional, assert_never
+from enum import Enum, auto
+from typing import assert_never
 
 
 def save_as_artifact(obj: object, path: Path, logger: MLFlowLogger):
@@ -28,19 +28,13 @@ def save_as_artifact(obj: object, path: Path, logger: MLFlowLogger):
         )
 
 
-class StitchingStage(Enum):
-    RANDOM_INIT = "random_init"
-    REGRESSION_INIT = "regression_init"
-    TRAIN_STITCHING_LAYER = "train_stitching_layer"
-    TRAIN_STITCHING_LAYER_AND_DOWNSTREAM = "train_stitching_layer_and_downstream"
+class JobStatus(Enum):
+    RUNNING = auto()
+    SUCCESS = auto()
+    ERROR = auto()
 
-
-STAGES_DEPENDENCIES: dict[StitchingStage, Optional[StitchingStage]] = {
-    StitchingStage.RANDOM_INIT: None,
-    StitchingStage.REGRESSION_INIT: StitchingStage.RANDOM_INIT,
-    StitchingStage.TRAIN_STITCHING_LAYER: StitchingStage.REGRESSION_INIT,
-    StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM: StitchingStage.REGRESSION_INIT,
-}
+    def __str__(self):
+        return self.name
 
 
 def analyze_stage(
@@ -75,33 +69,16 @@ def analyze_stage(
             assert_never(stage)
 
     # Take a snapshot of model performance on the test set
-    with torch.no_grad():
-        datamodule.setup("test")
-        metrics = dict(trainer.test(model, datamodule.test_dataloader())[0])
-        metrics["state_dict"] = model.state_dict()
-        metrics["model1"] = dict(trainer.test(model.model1, datamodule.test_dataloader())[0])
-        metrics["model2"] = dict(trainer.test(model.model2, datamodule.test_dataloader())[0])
-        save_as_artifact(metrics, Path("snapshot.pt"), logger)
-
-
-def maybe_restore_prior_stage(args: jsonargparse.Namespace, stitched_model: Conv1x1StitchingModel):
-    prior_stage = STAGES_DEPENDENCIES[args.stage]
-    if prior_stage is not None:
-        params = args.as_dict()
-        params["stage"] = prior_stage
-        skip_fields = getattr(parser, "metafields", {})
-        if args.stage in ["random_init", "regression_init"]:
-            # There is no dependency on trainer params for these stages, so we should load any
-            # prior run regardless of trainer params
-            skip_fields["trainer"] = None
-        prev_stage_run = search_single_run_by_params(
-            experiment_name=args.expt_name,
-            params=params,
-            tracking_uri=args.env.mlflow_tracking_uri,
-            skip_fields=skip_fields,
-        )
-        prior_state = torch.load(prev_stage_run["artifact_uri"] + "/snapshot.pt")
-        stitched_model.load_state_dict(prior_state["state_dict"])
+    if trainer.is_global_zero:
+        with torch.no_grad():
+            datamodule.setup("test")
+            metrics = dict(trainer.test(model, datamodule.test_dataloader())[0])
+            metrics["state_dict"] = model.state_dict()
+            logger._prefix = "model1"
+            metrics["model1"] = dict(trainer.test(model.model1, datamodule.test_dataloader())[0])
+            logger._prefix = "model2"
+            metrics["model2"] = dict(trainer.test(model.model2, datamodule.test_dataloader())[0])
+            save_as_artifact(metrics, Path("snapshot.pt"), logger)
 
 
 if __name__ == "__main__":
@@ -109,24 +86,12 @@ if __name__ == "__main__":
     parser.add_argument("--expt_name", type=str, required=True)
     add_env_parser(parser)
     parser.add_argument("--models_expt_name", type=str, required=True)
-    add_model_parser(parser, key="model1")
-    parser.add_argument(
-        "--model1_layer_name",
-        type=str,
-        required=True,
-        help="Name of the layer in model 1 to stitch into model 2",
-    )
-    add_model_parser(parser, key="model2")
-    parser.add_argument(
-        "--model2_layer_name",
-        type=str,
-        required=True,
-        help="Name of the layer in model 2 to stitch into from model 1",
-    )
+    add_model_parser(parser, baseclass=Conv1x1StitchingModel)
     add_data_parser(parser)
     add_trainer_parser(parser)
     parser.add_argument("--stage", type=StitchingStage, required=True)
     parser.add_argument("--config", action="config")
+    parser.add_argument("--status", action="store_true", help="Just output run status and exit.")
     args = parser.parse_args()
 
     # Remove the config arguments from the args namespace; they just clutter the parameters log.
@@ -134,60 +99,75 @@ if __name__ == "__main__":
         delattr(args, "config")
     if hasattr(args, "__default_config__"):
         delattr(args, "__default_config__")
+    check_status_then_exit = args.status
+    delattr(args, "status")
 
-    # Check if run has already been done to potentially exit early
-    search_results = search_runs_by_params(
-        experiment_name=args.expt_name,
-        params=args.as_dict(),
-        tracking_uri=args.env.mlflow_tracking_uri,
-        skip_fields=getattr(parser, "metafields", {}),
-    )
-    if len(search_results) > 0:
-        print(f"Run already exists with given params. Exiting.")
-        exit(0)
-
-    # Load pre-trained checkpoints for model1 and model2
-    model1 = restore_model_from_mlflow_run(
-        search_single_run_by_params(
-            experiment_name=args.models_expt_name,
-            params={
-                "model": args.model1.as_dict(),
-                "data": args.data.as_dict(),
-            },
+    if check_status_then_exit:
+        search_results = search_runs_by_params(
+            experiment_name=args.expt_name,
+            params=args.as_dict(),
             tracking_uri=args.env.mlflow_tracking_uri,
-            finished_only=True,
+            skip_fields=getattr(parser, "metafields", {}),
         )
-    )
+        print(*search_results["status"], sep=", ")
+        exit()
 
-    model2 = restore_model_from_mlflow_run(
-        search_single_run_by_params(
-            experiment_name=args.models_expt_name,
-            params={
-                "model": args.model2.as_dict(),
-                "data": args.data.as_dict(),
-            },
-            tracking_uri=args.env.mlflow_tracking_uri,
-            finished_only=True,
-        )
-    )
-
-    datamodule = parser.instantiate_classes(args).data
-    datamodule.prepare_data()
-
-    stitched_model = Conv1x1StitchingModel(
-        model1=model1,
-        layer1=args.model1_layer_name,
-        model2=model2,
-        layer2=args.model2_layer_name,
-        input_shape=datamodule.shape,
-    )
-
-    # If required, load state from previous stage
-    maybe_restore_prior_stage(args, stitched_model)
+    instantiated_args = parser.instantiate_classes(args)
+    stitched_model = instantiated_args.model
+    datamodule = instantiated_args.data
 
     # Log using MLFlow. Each stage of Stitching will be logged as a separate run (due to
     # log_hyperparams and the fact that the stage is an arg)
     logger = MLFlowLogger(experiment_name=args.expt_name, tracking_uri=args.env.mlflow_tracking_uri)
+
+    # Restore model1 and model2 from their original training results
+    model1_training_checkpoint = load_checkpoint_from_mlflow_run(
+        search_single_run_by_params(
+            experiment_name=args.models_expt_name,
+            params={
+                "model": args.model.init_args.model1.as_dict(),
+                "data": args.data.as_dict(),
+            },
+            tracking_uri=args.env.mlflow_tracking_uri,
+            finished_only=True,
+        ),
+        alias="best",
+    )
+    stitched_model.model1.load_state_dict(model1_training_checkpoint["state_dict"])
+
+    model2_training_checkpoint = load_checkpoint_from_mlflow_run(
+        search_single_run_by_params(
+            experiment_name=args.models_expt_name,
+            params={
+                "model": args.model.init_args.model2.as_dict(),
+                "data": args.data.as_dict(),
+            },
+            tracking_uri=args.env.mlflow_tracking_uri,
+            finished_only=True,
+        ),
+        alias="best",
+    )
+    stitched_model.model2.load_state_dict(model2_training_checkpoint["state_dict"])
+
+    # Restore the state of the stitched model from a previous stage if applicable
+    prior_stage = STAGES_DEPENDENCIES[args.stage]
+    if prior_stage is not None:
+        params = args.as_dict()
+        params["stage"] = prior_stage
+        skip_fields = getattr(parser, "metafields", {})
+        if args.stage in [StitchingStage.RANDOM_INIT, StitchingStage.REGRESSION_INIT]:
+            # There is no dependency on trainer params for these stages, so we should load any
+            # prior run regardless of trainer params
+            skip_fields["trainer"] = None
+        prev_stage_run = search_single_run_by_params(
+            experiment_name=args.expt_name,
+            params=params,
+            tags={"status": JobStatus.SUCCESS},
+            tracking_uri=args.env.mlflow_tracking_uri,
+            skip_fields=skip_fields,
+        )
+        prior_state = torch.load(prev_stage_run["artifact_uri"] + "/snapshot.pt")
+        stitched_model.load_state_dict(prior_state["state_dict"])
 
     # Save run metadata to the logger -- using the fact that the log_hyperparams method can take
     # a namespace object directly, and we have a namespace object for MainConfig.
@@ -200,10 +180,15 @@ if __name__ == "__main__":
 
     trainer = lit.Trainer(logger=logger, **args.trainer)
 
-    analyze_stage(
-        args.stage,
-        stitched_model,
-        datamodule,
-        trainer,
-        logger,
-    )
+    try:
+        logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.RUNNING)
+        analyze_stage(
+            args.stage,
+            stitched_model,
+            datamodule,
+            trainer,
+            logger,
+        )
+        logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.SUCCESS)
+    except Exception as e:
+        logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.ERROR)

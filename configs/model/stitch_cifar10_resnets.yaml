@@ -1,12 +1,18 @@
-model1:
-  class_path: nn_lib.models.ResNet
+model:
+  class_path: nn_lib.analysis.stitching.Conv1x1StitchingModel
   init_args:
-    depth: 20
-    width: 16
-    num_classes: 10
-model2:
-  class_path: nn_lib.models.ResNet
-  init_args:
-    depth: 20
-    width: 16
-    num_classes: 10
+    model1:
+      class_path: nn_lib.models.ResNet
+      init_args:
+        depth: 20
+        width: 16
+        num_classes: 10
+    layer1: block000/relu
+    model2:
+      class_path: nn_lib.models.ResNet
+      init_args:
+        depth: 20
+        width: 16
+        num_classes: 10
+    layer2: block000/relu
+    input_shape: [3, 32, 32]

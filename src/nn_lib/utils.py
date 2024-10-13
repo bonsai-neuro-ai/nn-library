@@ -45,15 +45,25 @@ def restore_params_from_mlflow_run(mlflow_run: pd.Series):
 
 def search_runs_by_params(
     experiment_name: str,
-    params: dict,
+    params: Optional[dict] = None,
+    tags: Optional[dict] = None,
     tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
     skip_fields: Optional[dict] = None,
 ) -> pd.DataFrame:
     """Query the MLflow server for runs in the specified experiment that match the given
     parameters. Any keys of the `meta_fields` dictionary will be excluded from the search."""
-    flattened_params = dict(iter_flatten_dict(params, join_op="/".join, skip_keys=skip_fields))
-    query_parts = [f"params.`{k}` = '{v}'" for k, v in flattened_params.items() if v is not None]
+    query_parts = []
+    if params is not None:
+        flattened_params = dict(iter_flatten_dict(params, join_op="/".join, skip_keys=skip_fields))
+        query_parts.extend(
+            [f"params.`{k}` = '{v}'" for k, v in flattened_params.items() if v is not None]
+        )
+    if tags is not None:
+        flattened_tags = dict(iter_flatten_dict(tags, join_op="/".join, skip_keys=skip_fields))
+        query_parts.extend(
+            [f"tags.`{k}` = '{v}'" for k, v in flattened_tags.items() if v is not None]
+        )
     if finished_only:
         query_parts.append("status = 'FINISHED'")
     query_string = " and ".join(query_parts)
@@ -64,7 +74,8 @@ def search_runs_by_params(
 
 def search_single_run_by_params(
     experiment_name: str,
-    params: dict,
+    params: Optional[dict] = None,
+    tags: Optional[dict] = None,
     tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
     skip_fields: Optional[dict] = None,
@@ -72,7 +83,7 @@ def search_single_run_by_params(
     """Query the MLflow server for runs in the specified experiment that match the given parameters.
     If exactly one run is found, return it. If no runs or multiple runs are found, raise an error.
     """
-    df = search_runs_by_params(experiment_name, params, tracking_uri, finished_only, skip_fields)
+    df = search_runs_by_params(experiment_name, params, tags, tracking_uri, finished_only, skip_fields)
     if len(df) == 0:
         raise ValueError("No runs found with the specified parameters")
     elif len(df) > 1:
@@ -105,7 +116,7 @@ def instantiate(model_class: str, init_args: dict) -> object:
     return cls(**init_args)
 
 
-def _iter_files(path: Union[Path, str]):
+def _iter_files(path: Union[Path, str]) -> Generator[Path, None, None]:
     # TODO - this is using path traversal when we should probably be using the MLflow API (I tried,
     #  but mlflow.artifacts.list_artifacts() gave inconsistently formatted paths.)
     for file in Path(path).iterdir():
@@ -115,10 +126,27 @@ def _iter_files(path: Union[Path, str]):
             yield from _iter_files(file)
 
 
-def restore_model_from_mlflow_run(
-    run: pd.Series, load_checkpoint: bool = True, device: Optional[str] = None
+def load_checkpoint_from_mlflow_run(
+    run: pd.Series,
+    alias: str = "best",
+    map_location: Optional[str] = None,
 ):
-    # TODO - configurable which checkpoint to load and/or load "best" checkpoint
+    # mlflow checkpoint artifacts are stored like checkpoints/epoch-4-step=10/epoch-4-step=10.ckpt
+    # with checkpoints/epoch-4-step=10/aliases.txt containing aliases like 'best' or 'last'.
+    for file in _iter_files(run["artifact_uri"]):
+        if file.name == "aliases.txt":
+            with open(file, "r") as f:
+                if f"'{alias}'" in f.read():
+                    the_checkpoint = file.parent / f"{file.parent.name}.ckpt"
+                    break
+    else:
+        raise FileNotFoundError(f"Could not find checkpoint with alias '{alias}'")
+    return torch.load(the_checkpoint, map_location=map_location)
+
+
+def restore_model_from_mlflow_run(
+    run: pd.Series, load_checkpoint: bool = True, device: Optional[str] = None, alias: str = "best"
+):
     params_dict = restore_params_from_mlflow_run(run)
     model_class = params_dict["model"]["class_path"]
     init_args = params_dict["model"]["init_args"]
@@ -126,10 +154,7 @@ def restore_model_from_mlflow_run(
     model: lit.LightningModule = instantiate(model_class, init_args)  # type: ignore
 
     if load_checkpoint:
-        checkpoints = [
-            file for file in _iter_files(run["artifact_uri"]) if file.name.endswith(".ckpt")
-        ]
-        data = torch.load(checkpoints[-1], map_location=device)
+        data = load_checkpoint_from_mlflow_run(run, alias=alias, map_location=device)
         model.load_state_dict(data["state_dict"])
 
     return model
