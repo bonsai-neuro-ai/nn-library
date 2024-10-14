@@ -9,8 +9,8 @@ fi
 # Run this from the project root!
 python -c "import nn_lib" 2>/dev/null || (echo "Put nn_lib on the PYTHONPATH or run from nn-library/src" && exit 1)
 
-MODEL1_ARGS="--model.model1.depth=20 --model.model1.width=32 --model.model1.label_smoothing=0.01"
-MODEL2_ARGS="--model.model2.depth=44 --model.model2.width=16 --model.model2.label_smoothing=0.01"
+MODEL1_ARGS="--model.model1.depth=20 --model.model1.width=32 --model1_training.label_smoothing=0.01"
+MODEL2_ARGS="--model.model2.depth=44 --model.model2.width=16 --model2_training.label_smoothing=0.01"
 LAYERS1=(
   "block000/relu"
   "block001/relu"
@@ -52,7 +52,7 @@ STAGES=(
   "TRAIN_STITCHING_LAYER_AND_DOWNSTREAM"
 )
 MODEL_EXPT_NAME="cifar10-resnets"
-EXPT_NAME="stitch-debug"
+EXPT_NAME="stitch-cifar10-resnets"
 
 for layer1 in "${LAYERS1[@]}"; do
   for layer2 in "${LAYERS2[@]}"; do

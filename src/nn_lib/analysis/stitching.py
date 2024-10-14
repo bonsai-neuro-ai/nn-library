@@ -1,7 +1,7 @@
 from torch import nn
 import torch.nn.functional as F
 import torch
-from nn_lib.models import LitClassifier
+from nn_lib.models import GraphModule
 from contextlib import contextmanager
 from typing import Iterable, Optional, Mapping, Any
 from enum import Enum, auto
@@ -92,13 +92,12 @@ class Conv1x1StitchingLayer(nn.Module):
         return self.__repr__()
 
 
-# TODO – maybe restructure lightning dependencies. Awkward for this to depend on LitClassifier.
-class Conv1x1StitchingModel(LitClassifier):
+class Conv1x1StitchingModel(GraphModule):
     def __init__(
         self,
-        model1: LitClassifier,
+        model1: GraphModule,
         layer1: str,
-        model2: LitClassifier,
+        model2: GraphModule,
         layer2: str,
         input_shape: tuple,
     ):
@@ -107,10 +106,26 @@ class Conv1x1StitchingModel(LitClassifier):
         reps1 = model1(dummy_inputs, named_outputs=(layer1,))[layer1]
         reps2 = model2(dummy_inputs, named_outputs=(layer2,))[layer2]
 
-        model1_part1 = model1.model.sub_model(model1.model.inputs, [layer1])
-        model1_part2 = model1.model.sub_model([layer1], model1.model.outputs)
-        model2_part1 = model2.model.sub_model(model2.model.inputs, [layer2])
-        model2_part2 = model2.model.sub_model([layer2], model2.model.outputs)
+        model1_part1 = model1.sub_model(
+            inputs=model1.inputs,
+            outputs=[layer1],
+            default_output=layer1,
+        )
+        model1_part2 = model1.sub_model(
+            inputs=[layer1],
+            outputs=model1.outputs,
+            default_output=model1.default_output,
+        )
+        model2_part1 = model2.sub_model(
+            inputs=model2.inputs,
+            outputs=[layer2],
+            default_output=layer2,
+        )
+        model2_part2 = model2.sub_model(
+            inputs=[layer2],
+            outputs=model2.outputs,
+            default_output=model2.default_output,
+        )
         stitching_layer = Conv1x1StitchingLayer(reps1.shape[1:], reps2.shape[1:])
 
         arch = {
@@ -119,17 +134,16 @@ class Conv1x1StitchingModel(LitClassifier):
             "model2": model2_part2.architecture(root="model2"),
         }
 
-        # Tell model2_part2 that it's input is the stitching layer's output
+        # Tell model2_part2 that its input is the stitching layer's output
         arch["model2"][layer2] = (arch["model2"][layer2][0], "stitching_layer")
 
         # Create architecture dict. Start with model1 inputs, then do a Sequential model of
         # model1_part1, stitching_layer, model2_part2
         super().__init__(
             architecture=arch,
-            num_classes=model2.num_classes,
-            label_smoothing=model2.loss.label_smoothing,
-            inputs=[f"model1/{i}" for i in model1.model.inputs],
-            outputs=[f"model2/{o}" for o in model2.model.outputs],
+            inputs=[f"model1/{i}" for i in model1.inputs],
+            outputs=[f"model2/{o}" for o in model2.outputs],
+            default_output=f"model2/{model2.default_output}",
         )
 
         # Store model parts in a dict (NOT a ModuleDict) because we want access to them without
@@ -141,24 +155,22 @@ class Conv1x1StitchingModel(LitClassifier):
             "model2_part2": model2_part2,
         }
 
-    def _recreate_model_from_parts(self, part1: LitClassifier, part2: LitClassifier):
+    def _recreate_model_from_parts(self, part1: GraphModule, part2: GraphModule):
         arch = {**part1.graph, **part2.graph}
         split_layer = part2.inputs[0]
         arch[split_layer] = part1[split_layer]
-        return LitClassifier(
+        return GraphModule(
             architecture=arch,
             inputs=part1.inputs,
             outputs=part2.outputs,
-            num_classes=self.num_classes,
-            label_smoothing=self.loss.label_smoothing,
         )
 
     @property
-    def model1(self) -> LitClassifier:
-        """Recreate the model1 part of the original model. Note that we *want* to return this as a
-        reference to the underlying model parts, not a copy, so that we can do things like
-        stitched_model.model1.load_state_dict(...) and have it update the parameters of the
-        stitched self.model in-place.
+    def model1(self) -> GraphModule:
+        """Recreate the model1 part of the original model. Note that we *want* to return this as
+        a reference to the underlying model parts, not a copy, so that we can do things like
+        stitched_model.model1.load_state_dict(...) and have it update the parameters of
+        self-model in-place.
         """
         return self._recreate_model_from_parts(
             self.original_model_parts["model1_part1"],
@@ -166,27 +178,27 @@ class Conv1x1StitchingModel(LitClassifier):
         )
 
     @property
-    def model2(self) -> LitClassifier:
-        """Recreate the model2 part of the original model. Note that we *want* to return this as a
-        reference to the underlying model parts, not a copy, so that we can do things like
-        stitched_model.model2.load_state_dict(...) and have it update the parameters of the
-        stitched self.model in-place.
+    def model2(self) -> GraphModule:
+        """Recreate the model2 part of the original model. Note that we *want* to return this as
+        a reference to the underlying model parts, not a copy, so that we can do things like
+        stitched_model.model2.load_state_dict(...) and have it update the parameters of
+        self-model in-place.
         """
         return self._recreate_model_from_parts(
             self.original_model_parts["model2_part1"],
             self.original_model_parts["model2_part2"],
         )
 
-    def initialize(self, initial_inputs: torch.Tensor):
+    def init_by_regression(self, initial_inputs: torch.Tensor):
         # Put model into eval mode to disable dropout, batchnorm, etc. for the purposes of finding
         # good alignment between model1 and model2 parts.
         self.eval()
         with torch.no_grad():
             m1p1 = self.original_model_parts["model1_part1"]
             m2p1 = self.original_model_parts["model2_part1"]
-            rep1 = m1p1(initial_inputs)[m1p1.outputs[0]]
-            rep2 = m2p1(initial_inputs)[m2p1.outputs[0]]
-            self.model["stitching_layer"].init_by_regression(rep1, rep2)
+            # The default_output of m1p1 and m1p2 is already layer1 and layer2, so we can run them
+            # forward without any named_outputs.
+            self["stitching_layer"].init_by_regression(m1p1(initial_inputs), m2p1(initial_inputs))
 
     @contextmanager
     def freeze_all_except(self, except_pattern: Optional[Iterable[str]] = None):
