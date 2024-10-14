@@ -6,7 +6,6 @@ from nn_lib.env import add_parser as add_env_parser
 from nn_lib.trainer import add_parser as add_trainer_parser
 from nn_lib.utils import search_runs_by_params
 from lightning.pytorch.loggers import MLFlowLogger
-from dataclasses import dataclass
 import jsonargparse
 
 

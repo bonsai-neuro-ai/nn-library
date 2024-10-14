@@ -36,6 +36,11 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         pass
 
     @property
+    def num_classes(self):
+        """Return the number of classes in the dataset (classification tasks only)."""
+        return None
+
+    @property
     def metadata(self):
         metadata_file = os.path.join(self.data_dir, "metadata.pkl")
         if not os.path.exists(metadata_file):

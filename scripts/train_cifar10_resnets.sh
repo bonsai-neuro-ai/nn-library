@@ -16,7 +16,7 @@ EXPT_NAME="cifar10-resnets"
 
 for depth in "${DEPTHS[@]}"; do
     for width in "${WIDTHS[@]}"; do
-        echo "Training ResNet-${depth} with width ${width} and label smoothing ${ls}"
+        echo "Training ResNet-${depth} with width ${width} and label smoothing ${LABEL_SMOOTHING}"
         python -m train \
           --expt_name=$EXPT_NAME \
           --config configs/data/cifar10.yaml \
@@ -24,6 +24,6 @@ for depth in "${DEPTHS[@]}"; do
           --config configs/model/cifar10_resnet.yaml \
           --model.depth="${depth}" \
           --model.width="${width}" \
-          --model.label_smoothing=$LABEL_SMOOTHING || exit 1
+          --classifier.label_smoothing=$LABEL_SMOOTHING || exit 1
   done
 done
