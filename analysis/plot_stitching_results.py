@@ -2,7 +2,7 @@ import jsonargparse
 import mlflow
 import seaborn as sns
 import matplotlib.pyplot as plt
-from stitch import StitchingStage
+from nn_lib.analysis.stitching import StitchingStage
 import numpy.testing as npt
 
 

@@ -59,7 +59,7 @@ for layer1 in "${LAYERS1[@]}"; do
   for layer2 in "${LAYERS2[@]}"; do
     for stage in "${STAGES[@]}"; do
       echo "Stitching ${layer1} into ${layer2} [stage ${stage}]"
-      python -m stitch \
+      python -m scripts.stitch \
         --expt_name="${EXPT_NAME}" \
         --models_expt_name="${MODEL_EXPT_NAME}" \
         --config=configs/trainer/classification.yaml \
