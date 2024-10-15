@@ -6,7 +6,6 @@ from nn_lib.trainer import add_parser as add_trainer_parser
 from nn_lib.utils import (
     search_runs_by_params,
     search_single_run_by_params,
-    load_checkpoint_from_mlflow_run,
     restore_model_from_mlflow_run,
 )
 from lightning.pytorch.loggers import MLFlowLogger
@@ -61,8 +60,12 @@ def analyze_stage(
             pass
         case StitchingStage.REGRESSION_INIT:
             datamodule.setup("fit")
-            example_batch = next(iter(datamodule.train_dataloader()))
-            wrapped_model.model.init_by_regression(example_batch)
+            # 'Freezing' disables gradient-based updates and batchnorm updates. This is a redundant
+            # check with the fact that init_by_regression runs in eval mode. Being extra careful
+            # that no model parameters are updated except those in the stitching layer.
+            with stitched_model.freeze_all_except():
+                example_batch = next(iter(datamodule.train_dataloader()))
+                wrapped_model.model.init_by_regression(example_batch)
         case StitchingStage.TRAIN_STITCHING_LAYER:
             with stitched_model.freeze_all_except(["stitching_layer"]):
                 trainer.fit(wrapped_model, datamodule)

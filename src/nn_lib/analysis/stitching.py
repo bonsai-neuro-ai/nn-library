@@ -170,38 +170,40 @@ class Conv1x1StitchingModel(GraphModule):
         """Recreate the model1 part of the original model. Note that we *want* to return this as
         a reference to the underlying model parts, not a copy, so that we can do things like
         stitched_model.model1.load_state_dict(...) and have it update the parameters of
-        self-model in-place.
+        self-model in-place. The model is returned in eval mode.
         """
         return self._recreate_model_from_parts(
             self.original_model_parts["model1_part1"],
             self.original_model_parts["model1_part2"],
-        )
+        ).eval()
 
     @property
     def model2(self) -> GraphModule:
         """Recreate the model2 part of the original model. Note that we *want* to return this as
         a reference to the underlying model parts, not a copy, so that we can do things like
         stitched_model.model2.load_state_dict(...) and have it update the parameters of
-        self-model in-place.
+        self-model in-place. The model is returned in eval mode.
         """
         return self._recreate_model_from_parts(
             self.original_model_parts["model2_part1"],
             self.original_model_parts["model2_part2"],
-        )
+        ).eval()
 
     def init_by_regression(self, initial_inputs: torch.Tensor):
         # Put model into eval mode to disable dropout, batchnorm, etc. for the purposes of finding
         # good alignment between model1 and model2 parts.
-        self.eval()
         with torch.no_grad():
-            m1p1 = self.original_model_parts["model1_part1"]
-            m2p1 = self.original_model_parts["model2_part1"]
+            # Put model parts into eval mode to disable dropout, batchnorm updates, etc.
+            m1p1 = self.original_model_parts["model1_part1"].eval()
+            m2p1 = self.original_model_parts["model2_part1"].eval()
             # The default_output of m1p1 and m1p2 is already layer1 and layer2, so we can run them
             # forward without any named_outputs.
             self["stitching_layer"].init_by_regression(m1p1(initial_inputs), m2p1(initial_inputs))
 
     @contextmanager
-    def freeze_all_except(self, except_pattern: Optional[Iterable[str]] = None):
+    def freeze_all_except(
+        self, except_pattern: Optional[Iterable[str]] = None, freeze_batchnorm: bool = True
+    ):
         if except_pattern is None:
             except_pattern = []
 
@@ -215,10 +217,11 @@ class Conv1x1StitchingModel(GraphModule):
                 param.requires_grad_(False)
 
         # Also ensure that all BatchNorm layers are in eval mode
-        for name, module in self.named_modules():
-            if isinstance(module, nn.BatchNorm2d):
-                restore[f"{name}.training"] = module.training
-                module.eval()
+        if freeze_batchnorm:
+            for name, module in self.named_modules():
+                if isinstance(module, nn.BatchNorm2d):
+                    restore[f"{name}.training"] = module.training
+                    module.eval()
 
         yield
 
@@ -229,9 +232,10 @@ class Conv1x1StitchingModel(GraphModule):
                 param.requires_grad_(restore.get(name, True))
 
         # Restore the batchnorm training modes
-        for name, module in self.named_modules():
-            if isinstance(module, nn.BatchNorm2d):
-                module.train(restore.get(f"{name}.training", True))
+        if freeze_batchnorm:
+            for name, module in self.named_modules():
+                if isinstance(module, nn.BatchNorm2d):
+                    module.train(restore.get(f"{name}.training", True))
 
     def state_dict(self, include_original_parts: bool = False, **kwargs):
         state = super().state_dict(**kwargs)
