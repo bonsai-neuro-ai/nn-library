@@ -155,10 +155,11 @@ class Conv1x1StitchingModel(GraphModule):
             "model2_part2": model2_part2,
         }
 
-    def _recreate_model_from_parts(self, part1: GraphModule, part2: GraphModule):
+    @staticmethod
+    def _recreate_model_from_parts(part1: GraphModule, part2: GraphModule):
         arch = {**part1.graph, **part2.graph}
         split_layer = part2.inputs[0]
-        arch[split_layer] = part1[split_layer]
+        arch[split_layer] = part1.graph[split_layer]
         return GraphModule(
             architecture=arch,
             inputs=part1.inputs,
@@ -172,7 +173,7 @@ class Conv1x1StitchingModel(GraphModule):
         stitched_model.model1.load_state_dict(...) and have it update the parameters of
         self-model in-place. The model is returned in eval mode.
         """
-        return self._recreate_model_from_parts(
+        return Conv1x1StitchingModel._recreate_model_from_parts(
             self.original_model_parts["model1_part1"],
             self.original_model_parts["model1_part2"],
         ).eval()
@@ -184,7 +185,7 @@ class Conv1x1StitchingModel(GraphModule):
         stitched_model.model2.load_state_dict(...) and have it update the parameters of
         self-model in-place. The model is returned in eval mode.
         """
-        return self._recreate_model_from_parts(
+        return Conv1x1StitchingModel._recreate_model_from_parts(
             self.original_model_parts["model2_part1"],
             self.original_model_parts["model2_part2"],
         ).eval()
