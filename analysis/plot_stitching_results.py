@@ -71,7 +71,7 @@ def visualize_test_loss(df):
             values="metrics.stitched-test_loss",
         )
         fig = plt.figure(figsize=(10, 6))
-        sns.heatmap(matrix, annot=True, fmt=".2f", vmin=0)
+        sns.heatmap(matrix, annot=True, fmt=".2f", vmin=0, vmax=6)
         plt.title(f"Test loss per model 1 layer vs model 2 layer in stage {stage.lower()}")
         fig.tight_layout()
         plt.show()
@@ -112,6 +112,39 @@ def visualize_between_stage_change_in_loss(df):
     fig.tight_layout()
     plt.show()
 
+def visualize_training_time(df):
+    df_train_stitching = df[df["params.stage"] == str(StitchingStage.TRAIN_STITCHING_LAYER)]
+    fig = plt.figure(figsize=(10, 6))
+    sns.heatmap(
+        df_train_stitching.pivot_table(
+            index="params.model/init_args/layer1",
+            columns="params.model/init_args/layer2",
+            values="metrics.stitched-epoch",
+        ).astype(int),
+        annot=True,
+        fmt="d",
+        vmin=0,
+    )
+    plt.title("Epochs to train stitching layer")
+    fig.tight_layout()
+    plt.show()
+
+    df_train_all = df[df["params.stage"] == str(StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM)]
+    fig = plt.figure(figsize=(10, 6))
+    sns.heatmap(
+        df_train_all.pivot_table(
+            index="params.model/init_args/layer1",
+            columns="params.model/init_args/layer2",
+            values="metrics.stitched-epoch",
+        ).astype(int),
+        annot=True,
+        fmt="d",
+        vmin=0,
+    )
+    plt.title("Epochs to train all layers")
+    fig.tight_layout()
+    plt.show()
+
 
 def main(args):
     df = load_data(args.expt_name, args.tracking_uri)
@@ -119,6 +152,7 @@ def main(args):
     plot_loss_per_stage(df)
     visualize_test_loss(df)
     visualize_between_stage_change_in_loss(df)
+    visualize_training_time(df)
 
 
 if __name__ == "__main__":
