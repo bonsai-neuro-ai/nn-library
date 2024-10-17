@@ -154,7 +154,10 @@ if __name__ == "__main__":
             tracking_uri=args.env.mlflow_tracking_uri,
             skip_fields=getattr(parser, "metafields", {}),
         )
-        print(*search_results["status"], sep=", ")
+        # Note that results["status"] is populated by mlflow, not by us. The "tags.status" field
+        # is custom and is populated by us.
+        if len(search_results) > 0:
+            print(*search_results["tags.status"], sep=", ")
         exit()
 
     instantiated_args = parser.instantiate_classes(args)
