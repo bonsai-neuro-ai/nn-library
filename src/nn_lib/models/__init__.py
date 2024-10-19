@@ -10,8 +10,9 @@ def add_parser(
     parser: ArgumentParser,
     key: str = "model",
     baseclass: Type[nn.Module] = GraphModule,
+    instantiate: bool = True,
 ):
-    parser.add_subclass_arguments(baseclass=baseclass, nested_key=key)
+    parser.add_subclass_arguments(baseclass=baseclass, nested_key=key, instantiate=instantiate)
 
     # Create/update 'metafields' attribute on the parser
     if hasattr(baseclass, "__metafields__"):

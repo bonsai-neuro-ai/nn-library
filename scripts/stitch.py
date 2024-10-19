@@ -13,29 +13,9 @@ from nn_lib.analysis.stitching import Conv1x1StitchingModel, StitchingStage, STA
 from pathlib import Path
 import torch
 import jsonargparse
-import tempfile
-from enum import Enum, auto
 from typing import Mapping, assert_never
 from torch import nn
-
-
-def save_as_artifact(obj: object, path: Path, logger: MLFlowLogger):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        local_file = Path(tmpdir) / path.name
-        remote_path = str(path.parent) if path.parent != Path() else None
-        torch.save(obj, local_file)
-        logger.experiment.log_artifact(
-            run_id=logger.run_id, local_path=str(local_file), artifact_path=remote_path
-        )
-
-
-class JobStatus(Enum):
-    RUNNING = auto()
-    SUCCESS = auto()
-    ERROR = auto()
-
-    def __str__(self):
-        return self.name
+from scripts.utils import save_as_artifact, JobStatus
 
 
 def analyze_stage(
@@ -104,7 +84,7 @@ def analyze_stage(
             "model2": test_wrapper(wrapped_model.model.model2, datamodule, "model2"),
         }
         if trainer.is_global_zero:
-            save_as_artifact(snapshot, Path("snapshot.pt"), logger)
+            save_as_artifact(snapshot, Path("snapshot.pt"), logger.run_id)
 
 
 if __name__ == "__main__":
