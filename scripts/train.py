@@ -43,6 +43,7 @@ def main(args: jsonargparse.Namespace, artifacts: dict[str, str] = None):
     trainer.fit(wrapped_model, instantiated_args.data, ckpt_path="last")
 
 
+# TODO - refactor some of the high-level 'script runner' code in the if-main block
 if __name__ == "__main__":
     parser = jsonargparse.ArgumentParser(default_config_files=["configs/local_config.yaml"])
     parser.add_argument("--expt_name", type=str, required=True)

@@ -87,6 +87,7 @@ def analyze_stage(
             save_as_artifact(snapshot, Path("snapshot.pt"), logger.run_id)
 
 
+# TODO - refactor some of the high-level 'script runner' code in the if-main block
 if __name__ == "__main__":
     parser = jsonargparse.ArgumentParser(default_config_files=["configs/local_config.yaml"])
     parser.add_argument("--expt_name", type=str, required=True)

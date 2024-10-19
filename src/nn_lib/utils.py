@@ -1,16 +1,18 @@
+import jsonargparse
 import torch
 import pandas as pd
 import mlflow
 import importlib
-import inspect
 from pathlib import Path
-from typing import Optional, Callable, Generator, Tuple, Any, TypeVar, Iterable, Union
+from typing import Optional, Callable, Generator, Tuple, Any, TypeVar, Iterable, Union, assert_never
 from torch import nn
+from mlflow.entities import Run
 
 
 T = TypeVar("T")
 K = TypeVar("K")
 J = TypeVar("J")
+RunOrURI = Union[pd.Series, Run, str, Path]
 
 
 def restore_params_from_mlflow_run(mlflow_run: pd.Series):
@@ -97,45 +99,23 @@ def instantiate(model_class: str, init_args: dict) -> object:
     """Take a string representation of a class and a dictionary of arguments and instantiate the
     class with those arguments.
     """
-    # TODO – this is duplicating work already done by jsonargparse. See if we can redirect to
-    #  something we can import from there.
     model_package, model_class = model_class.rsplit(".", 1)
     cls = getattr(importlib.import_module(model_package), model_class)
-    # inspect the signature of the class constructor and check types
-    sig = inspect.signature(cls.__init__)
-    for param_name, param_value in init_args.items():
-        param_type = sig.parameters[param_name].annotation
-        if param_type == inspect.Parameter.empty:
-            raise ValueError(f"Parameter {param_name} is missing annotation in {cls}")
-        if not isinstance(param_value, param_type):
-            try:
-                # Attempt to cast the parameter to the correct type
-                init_args[param_name] = param_type(param_value)
-            except Exception as e:
-                raise ValueError(
-                    f"Parameter {param_name} should be of type {param_type} but got {param_value}"
-                ) from e
-    return cls(**init_args)
 
-
-def _iter_files(path: Union[Path, str]) -> Generator[Path, None, None]:
-    # TODO - this is using path traversal when we should probably be using the MLflow API (I tried,
-    #  but mlflow.artifacts.list_artifacts() gave inconsistently formatted paths.)
-    for file in Path(path).iterdir():
-        if file.is_file():
-            yield file
-        elif file.is_dir():
-            yield from _iter_files(file)
+    parser = jsonargparse.ArgumentParser(exit_on_error=False)
+    parser.add_class_arguments(cls, nested_key="obj", instantiate=True)
+    parsed = parser.parse_object({"obj": init_args})
+    return parser.instantiate_classes(parsed).obj
 
 
 def load_checkpoint_from_mlflow_run(
-    run: pd.Series,
+    run_or_uri: RunOrURI,
     alias: str = "best",
     map_location: Optional[str] = None,
 ):
     # mlflow checkpoint artifacts are stored like checkpoints/epoch-4-step=10/epoch-4-step=10.ckpt
     # with checkpoints/epoch-4-step=10/aliases.txt containing aliases like 'best' or 'last'.
-    for file in _iter_files(run["artifact_uri"]):
+    for file in _iter_artifacts(run_or_uri):
         if file.name == "aliases.txt":
             with open(file, "r") as f:
                 if f"'{alias}'" in f.read():
@@ -176,6 +156,9 @@ def restore_data_from_mlflow_run(run: pd.Series):
     return instantiate(model_class, init_args)
 
 
+# Helpers/utilities below this line
+
+
 def iter_flatten_dict(
     d: dict[K, Any],
     join_op: Callable[[tuple[K, ...]], J],
@@ -198,3 +181,38 @@ def iter_flatten_dict(
         else:
             joined_key = join_op(new_prefix)
             yield joined_key, v
+
+
+def _to_mlflow_uri(run_or_uri: RunOrURI) -> str:
+    """Canonicalize the given run or URI to a string representation of the URI."""
+    match run_or_uri:
+        case str():
+            return run_or_uri
+        case Path():
+            return str(run_or_uri)
+        case pd.Series():
+            return run_or_uri.artifact_uri
+        case Run():
+            return run_or_uri.info.artifact_uri
+    assert_never(run_or_uri)
+
+
+def _iter_artifacts(run_or_uri: RunOrURI) -> Generator[Path, None, None]:
+    """Iterate over all files in the given MLflow run's artifact URI."""
+    for file in Path(_to_mlflow_uri(run_or_uri)).iterdir():
+        if file.is_file():
+            yield file
+        elif file.is_dir():
+            yield from _iter_artifacts(file)
+
+
+__all__ = [
+    "iter_flatten_dict",
+    "restore_params_from_mlflow_run",
+    "search_runs_by_params",
+    "search_single_run_by_params",
+    "instantiate",
+    "load_checkpoint_from_mlflow_run",
+    "restore_model_from_mlflow_run",
+    "restore_data_from_mlflow_run",
+]
