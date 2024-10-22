@@ -70,6 +70,7 @@ if __name__ == "__main__":
             "model": args.model.as_dict(),
             "data": args.data.as_dict(),
             "trainer": args.trainer.as_dict(),
+            "classifier": args.classifier.as_dict(),
         },
         tracking_uri=args.env.mlflow_tracking_uri,
         skip_fields=getattr(parser, "metafields", {}),
