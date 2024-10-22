@@ -1,26 +1,17 @@
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple, Callable, Union, Any, Iterable, List, Optional, Literal, Generator
+from typing import Tuple, Union, Iterable, List, Optional, Generator
 import warnings
 from nn_lib.utils import iter_flatten_dict
-
-
-# An 'Operation' is essentially a callable object that behaves like a nn.Module. Use None for
-# input values.
-OpType = Union[None, Callable, nn.Module, "ModelType"]
-# Specify inputs by name (string), relative index (negative integer), or a list of either
-InputType = Union[str, int]
-# An 'Operation' can be specified as a tuple of (op, input), where input can be a string, int, or
-# list of them
-OpWithMaybeInputs = Union[OpType, Tuple[OpType, InputType], Tuple[OpType, Iterable[InputType]]]
-# A model is a dict of named operations. Operations can themselves contain Models, so this allows
-# for model to be nested.
-ModelType = Dict[str, OpWithMaybeInputs]
-# A Graph is a map like {node: (edge, [parents])}, where edge can be Any. Here, edges will be
-# Callables
-GraphType = Dict[str, Tuple[Any, List[str]]]
-# Once called, the model might produce a Tensor or a dict of named tensors
-OutputType = Union[torch.Tensor, Dict[str, torch.Tensor]]
+from nn_lib.models.utils import (
+    ModelType,
+    GraphType,
+    OpType,
+    OpWithMaybeInputs,
+    InputType,
+    OutputType,
+    squash_conv_batchnorm,
+)
 
 INPUT_LAYER = "input"
 
@@ -102,6 +93,23 @@ class GraphModule(nn.Module):
         for layer_name in self._traverse_sub_graph(self.inputs, self.outputs):
             new_graph[layer_name] = self.graph[layer_name]
         self.graph = new_graph
+
+    def check_graph(self):
+        """Check that the graph is valid. This means that along the graph traversal order, each
+        layer's inputs are available in the output dict.
+        """
+        encountered = list(self.inputs)
+        for layer_name in self._traverse_sub_graph(self.inputs, self.outputs):
+            if layer_name in encountered:
+                continue
+            op, layer_inputs = self.graph[layer_name]
+            for inpt in layer_inputs:
+                if inpt not in encountered:
+                    raise ValueError(
+                        f"Layer {layer_name} depends on input {inpt} but layers encountered so"
+                        f"far are {encountered}."
+                    )
+            encountered.append(layer_name)
 
     @property
     def layer_names(self):
@@ -280,7 +288,7 @@ def _normpath(path, sep="/"):
     return sep.join(parts)
 
 
-def model2graph(model: ModelType, sep="/") -> GraphType:
+def model2graph(model: ModelType, sep="/", relative_paths: bool = True) -> GraphType:
     """Convert a nested dict of operations into a flat graph, where each operation is keyed by a
     unique path and may specify inputs using relative names or relative indices. The graph is a
     dict of {node: (edge, [parents])} where edge is a callable object (a nn.Module) and parents
@@ -316,15 +324,17 @@ def model2graph(model: ModelType, sep="/") -> GraphType:
                     # 'inpt' is an int like -1, referring to some number of layers back. Get that
                     # layer's name as a string
                     inpts[i] = flattened_layers[idx + inpt][0]
-                elif isinstance(inpt, str) and inpt not in graph:
+                elif relative_paths and isinstance(inpt, str) and inpt not in graph:
                     # 'inpt' is a string specifying a particular layer, but it's not a key in
-                    # 'graph' (not an absolute path)
-                    inpts[i] = _normpath(sep.join([path, "..", inpt]), sep=sep)
-                # Sanity-check
-                assert inpts[i] in graph, (
-                    f"While building graph, input to {path} includes {inpts[i]}, "
-                    f"but keys so far are {list(graph.keys())}"
-                )
+                    # 'graph'; consider it a relative path and check if parent/path exists
+                    input_as_relative_path = _normpath(sep.join([path, "..", inpt]), sep=sep)
+                    if input_as_relative_path in graph:
+                        inpts[i] = input_as_relative_path
+                else:
+                    # 'inpt' is a string that either refers to an existing layer or is an absolute
+                    # path. No further processing is needed. We will assume that the user has
+                    # specified an input that will be added to the dict later.
+                    pass
 
         if path in graph:
             raise ValueError(f"Duplicate path {path} in the graph!")
@@ -335,4 +345,51 @@ def model2graph(model: ModelType, sep="/") -> GraphType:
     return graph
 
 
-__all__ = ["model2graph", "GraphModule"]
+def squash_all_conv_batchnorms(model: GraphModule) -> GraphModule:
+    """Given a network, replace all Conv2d-BatchNorm2d pairs with a single Conv2d layer that
+    behaves equivalently to the original pair.
+
+    Note: requires the original model architecture to specify conv and batchnorm layers as
+    individual operations, rather than packaged in a nn.Sequential or other container.
+    """
+    # TODO - should we be performing a deepcopy first? Currently, a new model is formed for which
+    #  all layers that are *not* conv-bn pairs are shared with the original model.
+    new_arch = {**model.architecture()}
+    renamed = {}
+    for layer_name, (op, inputs) in model.graph.items():
+        if isinstance(op, nn.BatchNorm2d):
+            for parent_name in inputs:
+                parent_op, parent_inputs = model.graph[parent_name]
+                if isinstance(parent_op, nn.Conv2d):
+                    new_name = parent_name + "_fused"
+                    new_conv = squash_conv_batchnorm(parent_op, op)
+                    # Add the new fused layer to the graph
+                    new_arch[new_name] = (new_conv, parent_inputs)
+                    # Remove the old conv and bn layers
+                    del new_arch[parent_name]
+                    del new_arch[layer_name]
+                    # Prepare for second pass where we update any previous 'inputs' containing the
+                    # bn layers to point to the new fused layers.
+                    renamed[layer_name] = new_name
+
+    # Update any previous 'inputs' containing the bn layers to point to the new fused layers.
+    for layer_name, (op, inputs) in new_arch.items():
+        new_arch[layer_name] = (op, [renamed.get(i, i) for i in inputs])
+
+    # Return a new model with the updated architecture. Note: if some conv layer was followed by
+    # two paths (e.g. a conv-bn pair and a conv-relu pair), the model will be invalid because the
+    # conv layer will have been deleted but some layer still requires it as input. This will be
+    # flagged as an error in the GraphModule constructor.
+    return GraphModule(
+        architecture=new_arch,
+        inputs=model.inputs,
+        outputs=model.outputs,
+        default_output=model.default_output,
+    )
+
+
+__all__ = [
+    "model2graph",
+    "GraphModule",
+    "squash_all_conv_batchnorms",
+]
