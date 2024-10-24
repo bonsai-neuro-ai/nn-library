@@ -1,5 +1,6 @@
 from .mnist import MNISTDataModule
 from .cifar import CIFAR10DataModule, CIFAR100DataModule
+from .imagenet import ImageNetDataModule
 from .base import TorchvisionDataModuleBase
 from jsonargparse import ArgumentParser
 

@@ -4,6 +4,8 @@ from torch.utils.data import DataLoader, random_split
 import lightning as lit
 import os
 from abc import ABCMeta, abstractmethod
+from tqdm.auto import tqdm
+from typing import Optional, Callable
 
 
 class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
@@ -16,6 +18,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         seed: int = 8675309,
         batch_size: int = 64,
         num_workers: int = 4,
+        override_transform: Optional[Callable] = None,
     ):
         super().__init__()
         self.train_val_split = train_val_split
@@ -24,6 +27,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         self.nw = num_workers
         self.root_dir = root_dir
         self.train_ds_split, self.val_ds_split, self.test_ds = None, None, None
+        self._outside_transform = override_transform
 
     @property
     @abstractmethod
@@ -49,11 +53,17 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
 
     @property
     def train_transform(self):
-        return Compose([ToTensor(), Normalize(self.metadata["mean"], self.metadata["std"])])
+        if self._outside_transform is None:
+            return Compose([ToTensor(), Normalize(self.metadata["mean"], self.metadata["std"])])
+        else:
+            return Compose([ToTensor(), self._outside_transform])
 
     @property
     def test_transform(self):
-        return Compose([ToTensor(), Normalize(self.metadata["mean"], self.metadata["std"])])
+        if self._outside_transform is None:
+            return Compose([ToTensor(), Normalize(self.metadata["mean"], self.metadata["std"])])
+        else:
+            return Compose([ToTensor(), self._outside_transform])
 
     @property
     def data_dir(self):
@@ -70,17 +80,19 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         dataset."""
 
     def prepare_data(self) -> None:
+        # TODO - perhaps metadata should depend on transforms. e.g. we may want an input transform
+        #  that does its own color equalization.
         d = self.train_data(transform=ToTensor())
         _ = self.test_data(transform=ToTensor())
 
         metadata_file = os.path.join(self.data_dir, "metadata.pkl")
 
-        if not os.path.exists(metadata_file):
+        if not os.path.exists(metadata_file) and self._outside_transform is not None:
             # Calculate mean and std of each channel of the dataset.
             im = next(iter(d))[0]
             num_channels = im.shape[0]
             moment1, moment2 = torch.zeros(num_channels), torch.zeros(num_channels)
-            for i, (x, _) in enumerate(d):
+            for i, (x, _) in tqdm(enumerate(d), total=len(d), desc="One-time dataset stats"):
                 moment1 += x.mean([1, 2])
                 moment2 += x.pow(2).mean([1, 2])
             mean = moment1 / len(d)
