@@ -1,0 +1,5 @@
+data:
+  class_path: nn_lib.datasets.ImageNetDataModule
+  init_args:
+      batch_size: 200
+      num_workers: 20

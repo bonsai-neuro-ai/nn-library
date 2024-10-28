@@ -51,6 +51,10 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             self.prepare_data()
         return torch.load(metadata_file)
 
+    def replace_default_transform(self, transform: Callable) -> "TorchvisionDataModuleBase":
+        self._outside_transform = transform
+        return self
+
     @property
     def train_transform(self):
         if self._outside_transform is None:
