@@ -17,6 +17,7 @@ class JobStatus(Enum):
     RUNNING = auto()
     SUCCESS = auto()
     ERROR = auto()
+    DOES_NOT_EXIST = auto()
 
     def __str__(self):
         return self.name

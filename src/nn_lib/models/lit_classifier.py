@@ -4,7 +4,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchmetrics import Accuracy
-from typing import Union, Sequence, Generic, Any, TypeVar
+from typing import Union, Sequence, Any, TypeVar, Generic
 
 
 T = TypeVar("T")
@@ -15,14 +15,14 @@ class LitClassifier(lit.LightningModule, Generic[T]):
 
     def __init__(
         self,
-        model: nn.Module,
+        model: T,
         num_classes: int,
         label_smoothing: float = 0.0,
         lr: float = 1e-3,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
-        self.model = model
+        self.model: T = model
         self.loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         self.metrics = {
             "acc": Accuracy("multiclass", num_classes=num_classes),
