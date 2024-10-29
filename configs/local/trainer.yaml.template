@@ -1,0 +1,7 @@
+# Rename this file to local/trainer.yaml and use it to specify persistent configuration options for
+# the local machine this is running on.
+trainer:
+  accelerator: auto
+  devices: auto
+  strategy: auto
+  fast_dev_run: auto
