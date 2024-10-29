@@ -120,6 +120,8 @@ if __name__ == "__main__":
     parser.add_argument("--status", action="store_true", help="Just output run status and exit.")
     args = parser.parse_args()
 
+    torch.set_float32_matmul_precision(args.env.torch_matmul_precision)
+
     # Remove the config arguments from the args namespace; they just clutter the parameters log.
     if hasattr(args, "config"):
         delattr(args, "config")

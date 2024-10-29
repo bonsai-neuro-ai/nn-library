@@ -7,10 +7,11 @@ from jsonargparse import ArgumentParser
 class EnvConfig:
     """Local environment configuration."""
 
-    __metafields__ = frozenset({"mlflow_tracking_uri", "data_root"})
+    __metafields__ = frozenset({"mlflow_tracking_uri", "data_root", "torch_matmul_precision"})
 
     mlflow_tracking_uri: Optional[str] = None
     data_root: Optional[str] = None
+    torch_matmul_precision: Optional[str] = None
 
 
 def add_parser(parser: ArgumentParser, key: str = "env"):

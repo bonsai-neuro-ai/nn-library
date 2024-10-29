@@ -1,3 +1,4 @@
+import torch
 import lightning as lit
 from nn_lib.models import add_parser as add_model_parser
 from nn_lib.models import LitClassifier
@@ -45,7 +46,9 @@ def main(args: jsonargparse.Namespace, artifacts: dict[str, str] = None):
 
 # TODO - refactor some of the high-level 'script runner' code in the if-main block
 if __name__ == "__main__":
-    parser = jsonargparse.ArgumentParser(default_config_files=["configs/local_config.yaml"])
+    parser = jsonargparse.ArgumentParser(
+        default_config_files=["configs/local/env.yaml", "configs/local/trainer.yaml"]
+    )
     parser.add_argument("--expt_name", type=str, required=True)
     add_env_parser(parser)
     add_model_parser(parser)
@@ -56,6 +59,9 @@ if __name__ == "__main__":
     add_trainer_parser(parser)
     parser.add_argument("--config", action="config")
     args = parser.parse_args()
+
+    # Set the torch matmul precision to float32 if specified in the environment.
+    torch.set_float32_matmul_precision(args.env.torch_matmul_precision)
 
     # Remove the config arguments from the args namespace; they just clutter the parameters log.
     if hasattr(args, "config"):
