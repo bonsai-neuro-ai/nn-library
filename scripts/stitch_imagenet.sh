@@ -17,8 +17,8 @@ if [ -z "$model1" ] || [ -z "$model2" ]; then
   exit 1
 fi
 
-mapfile -t LAYERS1 < <(python -m scripts.model_info "$model1" | grep "add")
-mapfile -t LAYERS2 < <(python -m scripts.model_info "$model2" | grep "add")
+mapfile -t LAYERS1 < <(python -m scripts.model_info "$model1" --print-layers | grep "add")
+mapfile -t LAYERS2 < <(python -m scripts.model_info "$model2" --print-layers | grep "add")
 
 STAGES=(
   "RANDOM_INIT"
