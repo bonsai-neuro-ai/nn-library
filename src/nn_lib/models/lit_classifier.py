@@ -49,6 +49,11 @@ class LitClassifier(lit.LightningModule):
     def on_train_epoch_start(self):
         self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], sync_dist=True)
 
+    def on_validation_start(self) -> None:
+        # If we validate more than once per epoch, we'll want a record of the learning rate
+        # whenever we validate in addition to the 'on_train_epoch_start' hook.
+        self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], sync_dist=True)
+
     def validation_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self.model(x)
@@ -83,6 +88,8 @@ class LitClassifier(lit.LightningModule):
     def configure_callbacks(self) -> Union[Sequence[lit.Callback], lit.Callback]:
         # Note: important that EarlyStopping patience is larger than ReduceLROnPlateau patience
         # so that the model has a chance to recover from a learning rate drop
+        # TODO - verify that early stopping (and reduceLR) work as expected when validating more
+        #  than once per epoch and using reduced validation batches
         return [
             ModelCheckpoint(monitor="val_loss", save_top_k=1, mode="min", save_last=True),
             EarlyStopping(monitor="val_loss", patience=10),
