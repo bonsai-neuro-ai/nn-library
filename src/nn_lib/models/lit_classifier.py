@@ -4,10 +4,13 @@ from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchmetrics import Accuracy
-from typing import Union, Sequence, Mapping, Any
+from typing import Union, Sequence, Generic, Any, TypeVar
 
 
-class LitClassifier(lit.LightningModule):
+T = TypeVar("T")
+
+
+class LitClassifier(lit.LightningModule, Generic[T]):
     """A simple classification wrapper for a nn.Module."""
 
     def __init__(
@@ -50,8 +53,6 @@ class LitClassifier(lit.LightningModule):
         self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], sync_dist=True)
 
     def on_validation_start(self) -> None:
-        # If we validate more than once per epoch, we'll want a record of the learning rate
-        # whenever we validate in addition to the 'on_train_epoch_start' hook.
         self.log("lr", self.trainer.optimizers[0].param_groups[0]["lr"], sync_dist=True)
 
     def validation_step(self, batch, batch_idx):
@@ -74,13 +75,17 @@ class LitClassifier(lit.LightningModule):
 
     def configure_optimizers(self):
         opt = AdamW([p for p in self.parameters() if p.requires_grad], lr=self.lr)
-        sched = ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=3, min_lr=1e-6)
+        sched = ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=3, min_lr=1e-8)
+        if isinstance(self.trainer.val_check_interval, float):
+            raise NotImplementedError(
+                "Not yet handling val_check_interval as a float for increased LR scheduler updates"
+            )
         return {
             "optimizer": opt,
             "lr_scheduler": {
                 "scheduler": sched,
-                "interval": "epoch",
-                "frequency": 1,
+                "interval": "step",
+                "frequency": self.trainer.val_check_interval,
                 "monitor": "val_loss",
             },
         }
