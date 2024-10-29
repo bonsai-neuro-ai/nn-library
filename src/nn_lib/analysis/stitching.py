@@ -133,6 +133,10 @@ def create_stitching_model(
     # While stitch_graphs creates a 'stitching_layer' attribute, it has the wrong class. Rewrite it.
     stitched_model.stitching_layer = stitching_layer
 
+    # Get rid of parameters that are unused (2nd half of model1, 1st half of model2); these objects
+    # will still be available to the caller because they are owned by model1 and model2.
+    stitched_model.delete_all_unused_submodules()
+
     return stitched_model
 
 
