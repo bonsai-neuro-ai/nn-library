@@ -57,6 +57,10 @@ def prepare_models(
     # Restore the state of the stitched model from a previous stage if applicable
     prior_stage = STAGES_DEPENDENCIES[config.stage]
     if prior_stage is not None:
+        if len(prev_matching_runs) == 0:
+            raise ValueError(
+                "No runs found in the MLFlow experiment. Cannot restore state from a previous stage."
+            )
         prev_stage_run = prev_matching_runs[
             (prev_matching_runs["params.stitching/stage"] == str(prior_stage))
             & (prev_matching_runs["tags.status"] == str(JobStatus.SUCCESS))
@@ -89,16 +93,7 @@ def run(
     logger: MLFlowLogger,
     prev_matching_runs: pd.DataFrame,
 ):
-    """Run stitching analysis for the given stage.
-
-    Args:
-        stage: Which stage of the analysis pipeline to run. Note that some stages depend on others
-            being completed and loaded first!
-        stitched_model: A GraphModule representing the stitched model (See @prepare_models).
-        datamodule: The datamodule to use for training and testing.
-        trainer: The Lightning Trainer object to use for training and testing.
-        logger: The logger to use for logging metrics and checkpoints.
-    """
+    """Run stitching analysis for the given stage."""
     # Automatically populate 'num_classes' if not give (because parameter linking in jsonargparse
     # isn't able to handle this case)
     classifier_kwargs["num_classes"] = classifier_kwargs.get("num_classes", datamodule.num_classes)
@@ -216,15 +211,13 @@ if __name__ == "__main__":
         tracking_uri=args.env.mlflow_tracking_uri,
         skip_fields=getattr(parser, "metafields", {}),
     )
+    if len(prior_runs_same_params) > 0:
+        mask = prior_runs_same_params["params.stitching/stage"] == str(args.stitching.stage)
+        prior_runs_same_stage = prior_runs_same_params[mask]
+    else:
+        prior_runs_same_stage = pd.DataFrame()
 
     if check_status_then_exit:
-        if len(prior_runs_same_params) == 0:
-            print(JobStatus.DOES_NOT_EXIST)
-            exit()
-
-        prior_runs_same_stage = prior_runs_same_params[
-            prior_runs_same_params["params.stitching.stage"] == args.stitching.stage
-        ]
         if len(prior_runs_same_stage) > 0:
             # Note that results["status"] is populated by mlflow, not by us. The "tags.status" field
             # is custom and is populated by us.  TODO: do we need the custom one?
@@ -232,6 +225,9 @@ if __name__ == "__main__":
         else:
             print(JobStatus.DOES_NOT_EXIST)
         exit()
+    elif len(prior_runs_same_stage) > 0:
+            print("Skipping")
+            exit(0)
 
     instantiated_args = parser.instantiate_classes(args)
     datamodule = instantiated_args.data
