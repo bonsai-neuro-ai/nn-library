@@ -1,4 +1,5 @@
 import lightning as lit
+from lightning.pytorch.loggers import MLFlowLogger
 import pandas as pd
 from nn_lib.models import LitClassifier, get_pretrained_model, get_default_transforms
 from nn_lib.models.graph_utils import symbolic_trace, get_subgraph, squash_all_conv_batchnorm_pairs
@@ -8,14 +9,13 @@ from nn_lib.env import add_parser as add_env_parser
 from nn_lib.trainer import add_parser as add_trainer_parser
 from nn_lib.utils import search_runs_by_params
 from dataclasses import dataclass
-from lightning.pytorch.loggers import MLFlowLogger
 from nn_lib.analysis.stitching import create_stitching_model, StitchingStage, STAGES_DEPENDENCIES
 from pathlib import Path
 import torch
 import jsonargparse
 from typing import Mapping, assert_never
 from torch import nn
-from scripts.utils import save_as_artifact, JobStatus
+from scripts.utils import save_as_artifact, JobStatus, tune_before_training
 from copy import deepcopy
 
 
@@ -88,20 +88,20 @@ def prepare_models(
 def run(
     config: StitchingConfig,
     classifier_kwargs: dict,
-    datamodule: TorchvisionDataModuleBase,
-    trainer: lit.Trainer,
-    logger: MLFlowLogger,
+    dm: TorchvisionDataModuleBase,
+    tr: lit.Trainer,
+    log: MLFlowLogger,
     prev_matching_runs: pd.DataFrame,
 ):
     """Run stitching analysis for the given stage."""
     # Automatically populate 'num_classes' if not give (because parameter linking in jsonargparse
     # isn't able to handle this case)
-    classifier_kwargs["num_classes"] = classifier_kwargs.get("num_classes", datamodule.num_classes)
+    classifier_kwargs["num_classes"] = classifier_kwargs.get("num_classes", dm.num_classes)
 
     model1, model2, stitched_model, datamodule1, datamodule2 = prepare_models(
-        config, prev_matching_runs, datamodule
+        config, prev_matching_runs, dm
     )
-    del datamodule  # Don't accidentally refer to the original datamodule
+    del dm  # Don't accidentally refer to the original datamodule
 
     match config.stage:
         case StitchingStage.RANDOM_INIT:
@@ -129,10 +129,11 @@ def run(
             # model because the underlying modules are shared.
             with frozen(model1, model2, freeze_batchnorm=True):
                 wrapped_model = LitClassifier(stitched_model, **classifier_kwargs)
-                trainer.fit(wrapped_model, datamodule1)
+                tune_before_training(tr, wrapped_model, datamodule1)
+                tr.fit(wrapped_model, datamodule1)
             # Load the best checkpoint from fitting for snapshotting below
             wrapped_model.load_state_dict(
-                torch.load(trainer.checkpoint_callback.best_model_path)["state_dict"]
+                torch.load(tr.checkpoint_callback.best_model_path)["state_dict"]
             )
         case StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM:
             datamodule1.setup("fit")
@@ -140,10 +141,11 @@ def run(
             # model because the underlying modules are shared.
             with frozen(model1, freeze_batchnorm=True):
                 wrapped_model = LitClassifier(stitched_model, **classifier_kwargs)
-                trainer.fit(wrapped_model, datamodule1)
+                tune_before_training(tr, wrapped_model, datamodule1)
+                tr.fit(wrapped_model, datamodule1)
             # Load the best checkpoint from fitting for snapshotting below
             wrapped_model.load_state_dict(
-                torch.load(trainer.checkpoint_callback.best_model_path)["state_dict"]
+                torch.load(tr.checkpoint_callback.best_model_path)["state_dict"]
             )
         case _:
             assert_never(config.stage)
@@ -155,9 +157,9 @@ def run(
         # clear the results of the test loop. Otherwise, the results of the previous test() call
         # will have messed up devices on the non-rank-0 processes. See here:
         # https://github.com/Lightning-AI/pytorch-lightning/issues/18803#issuecomment-1839788106
-        trainer.test_loop._results.clear()
-        logger._prefix = logger_prefix
-        return trainer.test(LitClassifier(model, **classifier_kwargs), dm)[0]
+        tr.test_loop._results.clear()
+        log._prefix = logger_prefix
+        return tr.test(LitClassifier(model, **classifier_kwargs), dm)[0]
 
     # Take a snapshot of model performance on the test set
     with torch.no_grad():
@@ -169,14 +171,13 @@ def run(
             "model1": test_wrapper(model1, datamodule1, "model1"),
             "model2": test_wrapper(model2, datamodule2, "model2"),
         }
-        if trainer.is_global_zero:
-            save_as_artifact(snapshot, Path("snapshot.pt"), logger.run_id)
+        if tr.is_global_zero:
+            save_as_artifact(snapshot, Path("snapshot.pt"), log.run_id)
 
 
 # TODO - refactor some of the high-level 'script runner' code in the if-main block
 if __name__ == "__main__":
-    # todo: split up default configs
-    parser = jsonargparse.ArgumentParser(default_config_files=["configs/local_config.yaml"])
+    parser = jsonargparse.ArgumentParser(default_config_files=["configs/local/env.yaml"])
     parser.add_argument("--expt_name", type=str, required=True)
     add_env_parser(parser)
     parser.add_dataclass_arguments(StitchingConfig, "stitching", instantiate=True)
@@ -226,8 +227,8 @@ if __name__ == "__main__":
             print(JobStatus.DOES_NOT_EXIST)
         exit()
     elif len(prior_runs_same_stage) > 0:
-            print("Skipping")
-            exit(0)
+        print("Skipping")
+        exit(0)
 
     instantiated_args = parser.instantiate_classes(args)
     datamodule = instantiated_args.data
@@ -252,9 +253,9 @@ if __name__ == "__main__":
         run(
             config=args.stitching,
             classifier_kwargs=args.classifier.as_dict(),
-            datamodule=datamodule,
-            trainer=trainer,
-            logger=logger,
+            dm=datamodule,
+            tr=trainer,
+            log=logger,
             prev_matching_runs=prior_runs_same_params,
         )
         logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.SUCCESS)
