@@ -6,6 +6,7 @@ numpy
 pandas
 parse
 pydot
+pyyaml
 seaborn
 tabulate
 torch
