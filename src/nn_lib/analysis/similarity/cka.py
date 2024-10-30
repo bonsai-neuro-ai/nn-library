@@ -24,7 +24,7 @@ def remove_diagonal(k: torch.Tensor):
     assert k.dim() == 2, "Input tensor must be 2D"
     assert k.size(0) == k.size(1), "Input tensor must be square"
     m = k.size(0)
-    return k * (1 - torch.eye(m))
+    return k * (1 - torch.eye(m, device=k.device, dtype=k.dtype))
 
 
 # TODO - allow for nonlinear kernels
