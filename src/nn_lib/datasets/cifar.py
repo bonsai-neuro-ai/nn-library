@@ -1,6 +1,6 @@
 from torchvision.datasets import CIFAR10, CIFAR100
 from torchvision.transforms import ToTensor
-from nn_lib.datasets.base import TorchvisionDataModuleBase
+from nn_lib.datasets.base import TorchvisionDataModuleBase, TorchvisionDatasetType
 from torchvision.transforms import Compose, Normalize, RandomHorizontalFlip, RandomRotation
 
 
@@ -8,6 +8,7 @@ class CIFAR10DataModule(TorchvisionDataModuleBase):
     name = "cifar10"
     shape = (3, 32, 32)
     num_classes = 10
+    type = TorchvisionDatasetType.IMAGE_CLASSIFICATION
 
     @property
     def train_transform(self):

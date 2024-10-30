@@ -1,11 +1,36 @@
 import torch
-from torchvision.transforms import Normalize, Compose, ToTensor
+from torchvision.transforms import Compose, ToTensor
+from torchvision.transforms._presets import (
+    ImageClassification,
+    ObjectDetection,
+    OpticalFlow,
+    SemanticSegmentation,
+    VideoClassification,
+)
 from torch.utils.data import DataLoader, random_split
 import lightning as lit
 import os
 from abc import ABCMeta, abstractmethod
 from tqdm.auto import tqdm
-from typing import Optional, Callable
+from typing import Union, assert_never
+from enum import Enum, auto
+
+
+TransformType = Union[
+    ImageClassification,
+    ObjectDetection,
+    OpticalFlow,
+    SemanticSegmentation,
+    VideoClassification,
+]
+
+
+class TorchvisionDatasetType(Enum):
+    OBJECT_DETECTION = auto()
+    IMAGE_CLASSIFICATION = auto()
+    VIDEO_CLASSIFICATION = auto()
+    SEMANTIC_SEGMENTATION = auto()
+    OPTICAL_FLOW = auto()
 
 
 class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
@@ -18,7 +43,6 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         seed: int = 8675309,
         batch_size: int = 64,
         num_workers: int = 4,
-        override_transform: Optional[Callable] = None,
     ):
         super().__init__()
         self.train_val_split = train_val_split
@@ -27,7 +51,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         self.nw = num_workers
         self.root_dir = root_dir
         self.train_ds_split, self.val_ds_split, self.test_ds = None, None, None
-        self._outside_transform = override_transform
+        self._override_default_transform = None
 
     @property
     @abstractmethod
@@ -40,8 +64,14 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         pass
 
     @property
+    @abstractmethod
+    def type(self) -> TorchvisionDatasetType:
+        pass
+
+    @property
     def num_classes(self):
         """Return the number of classes in the dataset (classification tasks only)."""
+        # TODO - restructure so not all datasets need this property
         return None
 
     @property
@@ -51,23 +81,55 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             self.prepare_data()
         return torch.load(metadata_file)
 
-    def replace_default_transform(self, transform: Callable) -> "TorchvisionDataModuleBase":
-        self._outside_transform = transform
-        return self
+    @property
+    def default_transform(self) -> TransformType:
+        if self._override_default_transform is not None:
+            return self._override_default_transform
+        match self.type:
+            case TorchvisionDatasetType.IMAGE_CLASSIFICATION:
+                return ImageClassification(
+                    crop_size=self.shape[1:],
+                    resize_size=self.shape[1:],
+                    mean=self.metadata["mean"],
+                    std=self.metadata["std"],
+                )
+            case TorchvisionDatasetType.OBJECT_DETECTION:
+                raise NotImplementedError()  # TODO: TorchvisionDatasetType.OBJECT_DETECTION
+            case TorchvisionDatasetType.VIDEO_CLASSIFICATION:
+                raise NotImplementedError()  # TODO: TorchvisionDatasetType.VIDEO_CLASSIFICATION
+            case TorchvisionDatasetType.SEMANTIC_SEGMENTATION:
+                raise NotImplementedError()  # TODO: TorchvisionDatasetType.SEMANTIC_SEGMENTATION
+            case TorchvisionDatasetType.OPTICAL_FLOW:
+                raise NotImplementedError()  # TODO: TorchvisionDatasetType.OPTICAL_FLOW
+            case _:
+                assert_never(self.type)
+
+    @default_transform.setter
+    def default_transform(self, transform: TransformType):
+        match self.type:
+            case TorchvisionDatasetType.IMAGE_CLASSIFICATION:
+                expected_type = ImageClassification
+            case TorchvisionDatasetType.OBJECT_DETECTION:
+                expected_type = ObjectDetection
+            case TorchvisionDatasetType.VIDEO_CLASSIFICATION:
+                expected_type = VideoClassification
+            case TorchvisionDatasetType.SEMANTIC_SEGMENTATION:
+                expected_type = SemanticSegmentation
+            case TorchvisionDatasetType.OPTICAL_FLOW:
+                expected_type = OpticalFlow
+            case _:
+                assert_never(self.type)
+        if not isinstance(transform, expected_type):
+            raise ValueError(f"Expected transform of type {expected_type}, got {type(transform)}")
+        self._override_default_transform = transform
 
     @property
     def train_transform(self):
-        if self._outside_transform is None:
-            return Compose([ToTensor(), Normalize(self.metadata["mean"], self.metadata["std"])])
-        else:
-            return Compose([ToTensor(), self._outside_transform])
+        return Compose([ToTensor(), self.default_transform])
 
     @property
     def test_transform(self):
-        if self._outside_transform is None:
-            return Compose([ToTensor(), Normalize(self.metadata["mean"], self.metadata["std"])])
-        else:
-            return Compose([ToTensor(), self._outside_transform])
+        return Compose([ToTensor(), self.default_transform])
 
     @property
     def data_dir(self):
@@ -91,7 +153,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
 
         metadata_file = os.path.join(self.data_dir, "metadata.pkl")
 
-        if not os.path.exists(metadata_file) and self._outside_transform is not None:
+        if not os.path.exists(metadata_file) and self.default_transform is not None:
             # Calculate mean and std of each channel of the dataset.
             im = next(iter(d))[0]
             num_channels = im.shape[0]
@@ -118,17 +180,32 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         if stage == "test":
             self.test_ds = self.test_data(transform=self.test_transform)
 
-    def train_dataloader(self):
+    def train_dataloader(self, **kwargs):
         return DataLoader(
-            self.train_ds_split, batch_size=self.bs, num_workers=self.nw, persistent_workers=True
+            self.train_ds_split,
+            batch_size=self.bs,
+            num_workers=self.nw,
+            persistent_workers=True,
+            generator=torch.Generator().manual_seed(self.seed),
+            **kwargs,
         )
 
-    def val_dataloader(self):
+    def val_dataloader(self, **kwargs):
         return DataLoader(
-            self.val_ds_split, batch_size=self.bs, num_workers=self.nw, persistent_workers=True
+            self.val_ds_split,
+            batch_size=self.bs,
+            num_workers=self.nw,
+            persistent_workers=True,
+            generator=torch.Generator().manual_seed(self.seed),
+            **kwargs,
         )
 
-    def test_dataloader(self):
+    def test_dataloader(self, **kwargs):
         return DataLoader(
-            self.test_ds, batch_size=self.bs, num_workers=self.nw, persistent_workers=True
+            self.test_ds,
+            batch_size=self.bs,
+            num_workers=self.nw,
+            persistent_workers=True,
+            generator=torch.Generator().manual_seed(self.seed),
+            **kwargs,
         )

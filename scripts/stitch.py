@@ -78,8 +78,10 @@ def prepare_models(
 
     # Create 2 copies of the datamodule in case they have different transforms; the stitched module
     # will use the datamodule for model1
-    datamodule1 = deepcopy(dm).replace_default_transform(get_default_transforms(config.model1))
-    datamodule2 = deepcopy(dm).replace_default_transform(get_default_transforms(config.model2))
+    datamodule1 = deepcopy(dm)
+    datamodule1.default_transform = get_default_transforms(config.model1)
+    datamodule2 = deepcopy(dm)
+    datamodule2.default_transform = get_default_transforms(config.model2)
 
     # TODO - something needs refactoring because this return statement is awful
     return model1, model2, stitched_model, datamodule1, datamodule2

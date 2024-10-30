@@ -1,6 +1,6 @@
 import os
 from torchvision.datasets import ImageFolder
-from nn_lib.datasets.base import TorchvisionDataModuleBase
+from nn_lib.datasets.base import TorchvisionDataModuleBase, TorchvisionDatasetType
 import yaml
 
 
@@ -8,6 +8,7 @@ class ImageNetDataModule(TorchvisionDataModuleBase):
     name = "imagenet"
     shape = (3, 224, 224)
     num_classes = 1000
+    type = TorchvisionDatasetType.IMAGE_CLASSIFICATION
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
