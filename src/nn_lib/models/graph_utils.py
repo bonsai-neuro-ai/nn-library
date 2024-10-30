@@ -14,6 +14,7 @@ __all__ = [
     "get_nodes_by_name",
     "get_subgraph",
     "prefix_all_nodes",
+    "set_dict_outputs_by_name",
     "set_inputs_and_output_by_name",
     "stitch_graphs",
     "squash_all_conv_batchnorm_pairs",
@@ -95,6 +96,29 @@ def _set_output_by_name(graph: Graph, output: str) -> None:
 
     with graph.inserting_after():
         graph.output(node_to_output)
+
+
+def set_dict_outputs_by_name(graph: Graph, outputs: Iterable[str]) -> None:
+    """Modify the given Graph by adding a new node which collects multiple outputs in a dict. This
+    new node will then become the output of the graph.
+    """
+    # Find the named nodes to be the args to a new output node
+    nodes_to_output = get_nodes_by_name(graph, outputs)
+
+    # Remove all preexisting outputs
+    for node in list(graph.nodes):
+        if node.op == "output":
+            graph.erase_node(node)
+
+    with graph.inserting_after():
+        # Create a new node which collects the outputs into a dict
+        collector_node = graph.call_function(
+            the_function=dict, kwargs={name: node for name, node in zip(outputs, nodes_to_output)}
+        )
+        # Set the new 'collector' node as the output of the graph
+        graph.output(collector_node)
+
+    graph.eliminate_dead_code()
 
 
 def set_inputs_and_output_by_name(graph: Graph, inputs: Iterable[str], output: str) -> None:
