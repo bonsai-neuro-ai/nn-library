@@ -1,7 +1,6 @@
 import pandas as pd
 from lightning.fabric import Fabric
 from lightning.pytorch.loggers import MLFlowLogger
-
 from nn_lib.models import get_pretrained_model, get_default_transforms
 from nn_lib.models.graph_utils import (
     symbolic_trace,
@@ -24,8 +23,6 @@ from collections import defaultdict
 from tqdm.auto import tqdm
 import mlflow
 
-from scripts.utils import save_as_artifact
-
 
 @dataclass
 class SimilarityConfig:
@@ -35,6 +32,7 @@ class SimilarityConfig:
     layers2: str | list[str]
     m: int
     seed: int = 2497249  # Default seed chosen by keyboard-mashing
+    inputs: bool = False  # Whether to include the input layer in the similarity analysis
     method: str = "LinearCKA"  # TODO - configure type of similarity metric besides CKA
 
     def __str__(self):
@@ -44,12 +42,20 @@ class SimilarityConfig:
         return str(self)
 
 
-def handle_layers_arg(model: GraphModule, layers_arg: str | list[str]) -> list[str]:
+def handle_layers_arg(
+    model: GraphModule, layers_arg: str | list[str], inputs: bool = False
+) -> list[str]:
+    layers_list = []
+    if inputs:
+        layers_list += [node.name for node in model.graph.nodes if node.op == "placeholder"]
     if isinstance(layers_arg, list):
-        return layers_arg
+        layers_list += layers_arg
     else:
         expr = re.compile(layers_arg)
-        return [node.name for node in model.graph.nodes if expr.match(node.name)]
+        layers_list += [node.name for node in model.graph.nodes if expr.match(node.name)]
+
+    # Ensure unique, but keep order of first appearance of each name
+    return list(dict.fromkeys(layers_list))
 
 
 @torch.no_grad()
@@ -70,8 +76,8 @@ def get_reps(
     model2 = squash_all_conv_batchnorm_pairs(model2)
 
     # Parse the layers argument
-    config.layers1 = handle_layers_arg(model1, config.layers1)
-    config.layers2 = handle_layers_arg(model2, config.layers2)
+    config.layers1 = handle_layers_arg(model1, config.layers1, inputs=config.inputs)
+    config.layers2 = handle_layers_arg(model2, config.layers2, inputs=config.inputs)
 
     # Configure the models to output a dict of {name: tensor} pairs
     set_dict_outputs_by_name(model1.graph, outputs=config.layers1)
@@ -111,10 +117,10 @@ def get_reps(
         for k2, v2 in out2.items():
             reps2[k2].append(v2.cpu())
 
+        progbar.update(len(x1))
+
         if n >= config.m:
             break
-
-        progbar.update(len(x1))
 
     reps1 = {k: torch.cat(v, dim=0)[: config.m] for k, v in reps1.items()}
     reps2 = {k: torch.cat(v, dim=0)[: config.m] for k, v in reps2.items()}
