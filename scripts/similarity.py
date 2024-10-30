@@ -1,37 +1,64 @@
+import pandas as pd
 from lightning.fabric import Fabric
 from lightning.pytorch.loggers import MLFlowLogger
+
 from nn_lib.models import get_pretrained_model, get_default_transforms
-from nn_lib.models.graph_utils import symbolic_trace, get_subgraph, squash_all_conv_batchnorm_pairs
+from nn_lib.models.graph_utils import (
+    symbolic_trace,
+    squash_all_conv_batchnorm_pairs,
+    set_dict_outputs_by_name,
+    GraphModule,
+)
 from nn_lib.datasets import add_parser as add_data_parser, TorchvisionDataModuleBase
 from nn_lib.analysis.similarity import cka, HSICEstimator  # TODO - add other similarity metrics
-from nn_lib.env import add_parser as add_env_parser, EnvConfig
+from nn_lib.env import add_parser as add_env_parser
 from nn_lib.utils import search_runs_by_params
 from dataclasses import dataclass
+import re
 import torch
 import jsonargparse
-from torch import nn
-from scripts.utils import JobStatus
 from typing import assert_never
+from torch import nn
 from copy import deepcopy
+from collections import defaultdict
+from tqdm.auto import tqdm
+import mlflow
+
+from scripts.utils import save_as_artifact
 
 
 @dataclass
 class SimilarityConfig:
     model1: str | nn.Module
-    layer1: str
+    layers1: str | list[str]
     model2: str | nn.Module
-    layer2: str
+    layers2: str | list[str]
     m: int
     seed: int = 2497249  # Default seed chosen by keyboard-mashing
-    method: str = "CKA"  # TODO - configure this more sensibly than just a string
+    method: str = "LinearCKA"  # TODO - configure type of similarity metric besides CKA
+
+    def __str__(self):
+        return f"{self.method}_{self.model1}_{self.model2}_m{self.m}_seed{self.seed}"
+
+    def __repr__(self):
+        return str(self)
+
+
+def handle_layers_arg(model: GraphModule, layers_arg: str | list[str]) -> list[str]:
+    if isinstance(layers_arg, list):
+        return layers_arg
+    else:
+        expr = re.compile(layers_arg)
+        return [node.name for node in model.graph.nodes if expr.match(node.name)]
 
 
 @torch.no_grad()
-def get_reps(config: SimilarityConfig, dm: TorchvisionDataModuleBase):
+def get_reps(
+    config: SimilarityConfig, dm: TorchvisionDataModuleBase, fabric: Fabric
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """Get/create GraphModules corresponding to model1 up through layer1 and model2 up through
     layer 2
     """
-
     # Load pretrained models
     model1 = symbolic_trace(get_pretrained_model(config.model1))
     model2 = symbolic_trace(get_pretrained_model(config.model2))
@@ -42,13 +69,18 @@ def get_reps(config: SimilarityConfig, dm: TorchvisionDataModuleBase):
     model1 = squash_all_conv_batchnorm_pairs(model1)
     model2 = squash_all_conv_batchnorm_pairs(model2)
 
-    # Get subgraphs corresponding to the layers of interest
-    model1_part1 = get_subgraph(model1, inputs=["x"], output=config.layer1)
-    model2_part1 = get_subgraph(model2, inputs=["x"], output=config.layer2)
+    # Parse the layers argument
+    config.layers1 = handle_layers_arg(model1, config.layers1)
+    config.layers2 = handle_layers_arg(model2, config.layers2)
 
-    fabric = Fabric(devices=1)
-    model1_part1 = fabric.setup_module(model1_part1)
-    model2_part1 = fabric.setup_module(model2_part1)
+    # Configure the models to output a dict of {name: tensor} pairs
+    set_dict_outputs_by_name(model1.graph, outputs=config.layers1)
+    model1.recompile()
+    set_dict_outputs_by_name(model2.graph, outputs=config.layers2)
+    model2.recompile()
+
+    model1 = fabric.setup_module(model1)
+    model2 = fabric.setup_module(model2)
 
     # (Maybe) update the datamodule for each model.
     dm.seed = config.seed
@@ -66,36 +98,58 @@ def get_reps(config: SimilarityConfig, dm: TorchvisionDataModuleBase):
         dm1.test_dataloader(shuffle=True), dm2.test_dataloader(shuffle=True)
     )
 
-    n, reps1, reps2 = 0, [], []
+    progbar = tqdm(desc="Computing representations", total=config.m)
+    n, reps1, reps2 = 0, defaultdict(list), defaultdict(list)
     for (x1, _), (x2, _) in zip(dl1, dl2):
         n += len(x1)
-        reps1.append(model1_part1(x1))
-        reps2.append(model2_part1(x2))
+
+        out1 = model1(x1)
+        for k1, v1 in out1.items():
+            reps1[k1].append(v1.cpu())
+
+        out2 = model2(x2)
+        for k2, v2 in out2.items():
+            reps2[k2].append(v2.cpu())
+
         if n >= config.m:
             break
 
-    reps1 = torch.cat(reps1, dim=0)[: config.m]
-    reps2 = torch.cat(reps2, dim=0)[: config.m]
+        progbar.update(len(x1))
+
+    reps1 = {k: torch.cat(v, dim=0)[: config.m] for k, v in reps1.items()}
+    reps2 = {k: torch.cat(v, dim=0)[: config.m] for k, v in reps2.items()}
 
     return reps1, reps2
 
 
-def run(
-    config: SimilarityConfig,
-    dm: TorchvisionDataModuleBase,
-    log: MLFlowLogger,
-):
-    reps1, reps2 = get_reps(config, dm)
+def run(config: SimilarityConfig, dm: TorchvisionDataModuleBase, fabric: Fabric):
+    reps1, reps2 = get_reps(config, dm, fabric)
 
-    # Compute similarity
-    # TODO - refactor so cmd line here can specify any metric in nn_lib.analysis.similarity
-    if config.method == "CKA":
-        # Use the least biased HSIC estimator
-        sim = cka(reps1, reps2, estimator=HSICEstimator.SONG2007)
-    else:
-        assert_never(config.method)
-
-    log.log_metrics({"cka": sim})
+    # Compute similarity for all pairs of layers
+    progbar = tqdm(desc="Layer x layer similarity", total=len(config.layers1) * len(config.layers2))
+    for layer1, tensor1 in reps1.items():
+        tensor1 = fabric.to_device(tensor1)
+        for layer2, tensor2 in reps2.items():
+            tensor2 = fabric.to_device(tensor2)
+            with mlflow.start_run(run_name=f"{layer1}_{layer2}", nested=True):
+                mlflow.log_params(
+                    {
+                        "model1": config.model1,
+                        "model2": config.model2,
+                        "layer1": layer1,
+                        "layer2": layer2,
+                        "m": config.m,
+                        "seed": config.seed,
+                    }
+                )
+                match config.method:
+                    case "LinearCKA":
+                        sim = cka(tensor1, tensor2, estimator=HSICEstimator.SONG2007)
+                    case _:
+                        # TODO - implement others
+                        assert_never(config.method)
+                mlflow.log_metrics({config.method: sim})
+                progbar.update(1)
 
 
 # TODO - refactor some of the high-level 'script runner' code in the if-main block
@@ -128,45 +182,49 @@ if __name__ == "__main__":
         params=params,
         tracking_uri=args.env.mlflow_tracking_uri,
         skip_fields=getattr(parser, "metafields", {}),
+        finished_only=False,
     )
+    if len(prior_runs_same_params) > 0:
+        finished_runs_same_params = prior_runs_same_params[
+            prior_runs_same_params["status"] == "FINISHED"
+        ]
+    else:
+        finished_runs_same_params = pd.DataFrame()
 
     if check_status_then_exit:
         if len(prior_runs_same_params) > 0:
-            # Note that results["status"] is populated by mlflow, not by us. The "tags.status" field
-            # is custom and is populated by us.  TODO: do we need the custom one?
-            print(*prior_runs_same_params["tags.status"], sep=", ")
+            print(*prior_runs_same_params["status"], sep=", ")
         else:
-            print(JobStatus.DOES_NOT_EXIST)
+            print("DOES_NOT_EXIST")
         exit()
-    elif len(prior_runs_same_params) > 0:
+    elif len(finished_runs_same_params) > 0:
         print("Skipping")
         exit(0)
 
     instantiated_args = parser.instantiate_classes(args)
     datamodule = instantiated_args.data
 
-    # Log using MLFlow. Each stage of Stitching will be logged as a separate run (due to
-    # log_hyperparams and the fact that the stage is an arg)
-    logger = MLFlowLogger(experiment_name=args.expt_name, tracking_uri=args.env.mlflow_tracking_uri)
-
-    # Save run metadata to the logger -- using the fact that the log_hyperparams method can take
-    # a namespace object directly, and we have a namespace object for MainConfig.
+    # Log using MLFlow. The MLFlowLogger class contains a convenient log_hyperparams method that
+    # will log the entire Namespace. Otherwise, we use mlflow directly.
+    logger = MLFlowLogger(
+        experiment_name=args.expt_name,
+        tracking_uri=args.env.mlflow_tracking_uri,
+        run_name=str(instantiated_args.similarity),
+    )
     logger.log_hyperparams(args)
-
-    # Log config as an artifact
     logger.experiment.log_text(
         run_id=logger.run_id, text=parser.dump(args), artifact_file="config.yaml"
     )
 
-    try:
-        logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.RUNNING)
-        run(
-            config=args.similarity,
-            dm=datamodule,
-            log=logger,
-        )
-        logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.SUCCESS)
-    except Exception as e:
-        logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.ERROR)
-        logger.experiment.log_text(run_id=logger.run_id, text=str(e), artifact_file="error.txt")
-        raise e
+    # The following set_experiment and set_tracking_uri calls may not be necessary given the
+    # MLFlowLogger call in the previous lines, but this redundancy doesn't hurt.
+    mlflow.set_experiment(experiment_name=args.expt_name)
+    mlflow.set_tracking_uri(args.env.mlflow_tracking_uri)
+
+    # We'll set a parent run based on the args, and individual child runs for each pair of layers.
+    with mlflow.start_run(run_id=logger.run_id):
+        try:
+            run(config=args.similarity, dm=datamodule, fabric=Fabric(devices=1))
+        except Exception as e:
+            mlflow.log_text(str(e), "error.txt")
+            raise e

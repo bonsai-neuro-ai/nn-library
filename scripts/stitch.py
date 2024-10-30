@@ -250,6 +250,7 @@ if __name__ == "__main__":
 
     trainer = lit.Trainer(logger=logger, **args.trainer)
 
+    # TODO - get rid of custom status handling; replace with `with mlflow.start_run` block
     try:
         logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.RUNNING)
         run(
