@@ -8,6 +8,7 @@ from nn_lib.trainer import add_parser as add_trainer_parser
 from nn_lib.utils import search_runs_by_params
 from lightning.pytorch.loggers import MLFlowLogger
 import jsonargparse
+from .utils import tune_before_training
 
 
 def main(args: jsonargparse.Namespace, artifacts: dict[str, str] = None):
@@ -41,6 +42,7 @@ def main(args: jsonargparse.Namespace, artifacts: dict[str, str] = None):
     # Create the trainer object using our custom logger and set the remaining arguments from the`
     # TrainerConfig.
     trainer = lit.Trainer(logger=logger, **args.trainer.as_dict())
+    tune_before_training(trainer, wrapped_model, instantiated_args.data)
     trainer.fit(wrapped_model, instantiated_args.data, ckpt_path="last")
 
 

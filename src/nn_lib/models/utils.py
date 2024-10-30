@@ -1,44 +1,39 @@
-import pydot
 import torch
 from torch import nn
-from typing import Any, Callable, Dict, Iterable, List, Tuple, Union
+from contextlib import contextmanager
 
 
-# Type definitions for graph-based model construction
-# An 'Operation' is essentially a callable object that behaves like a nn.Module. Use None for
-# input values.
-OpType = Union[None, Callable, nn.Module, "ModelType"]
-# Specify inputs by name (string), relative index (negative integer), or a list of either
-InputType = Union[str, int]
-# An 'Operation' can be specified as a tuple of (op, input), where input can be a string, int, or
-# list of them
-OpWithMaybeInputs = Union[OpType, Tuple[OpType, InputType], Tuple[OpType, Iterable[InputType]]]
-# A model is a dict of named operations. Operations can themselves contain Models, so this allows
-# for model to be nested.
-ModelType = Dict[str, OpWithMaybeInputs]
-# A Graph is a map like {node: (edge, [parents])}, where edge can be Any. Here, edges will be
-# Callables
-GraphType = Dict[str, Tuple[Any, List[str]]]
-# Once called, the model might produce a Tensor or a dict of named tensors
-OutputType = Union[torch.Tensor, Dict[str, torch.Tensor]]
+__all__ = [
+    "frozen",
+    "squash_conv_batchnorm",
+]
 
 
-class Add:
-    def __call__(self, x, y):
-        return x + y
+@contextmanager
+def frozen(*models: nn.Module, freeze_batchnorm: bool = True):
+    """Context manager that sets requires_grad=False for all parameters in the given models."""
+    param_status = []
+    for model in models:
+        for param in model.parameters():
+            param_status.append((param, param.requires_grad))
+            param.requires_grad = False
 
+    bn_status = []
+    if freeze_batchnorm:
+        for model in models:
+            for module in model.named_modules():
+                if isinstance(module, nn.BatchNorm2d):
+                    bn_status.append((module, module.training))
+                    module.eval()
 
-class Identity:
-    def __call__(self, x):
-        return x
+    yield
 
+    for param, status in param_status:
+        param.requires_grad = status
 
-def graph2dot(network_graph: GraphType) -> pydot.Graph:
-    edges = []
-    for layer, (_, parents) in network_graph.items():
-        for pa in parents:
-            edges.append((pa, layer))
-    return pydot.graph_from_edges(edges, directed=True)
+    if freeze_batchnorm:
+        for module, status in bn_status:
+            module.train(status)
 
 
 def squash_conv_batchnorm(conv_layer: nn.Conv2d, bn_layer: nn.BatchNorm2d) -> nn.Conv2d:

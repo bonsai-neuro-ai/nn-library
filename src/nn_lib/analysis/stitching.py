@@ -1,21 +1,32 @@
 from torch import nn
 import torch.nn.functional as F
 import torch
-from nn_lib.models import GraphModule
-from contextlib import contextmanager
-from typing import Iterable, Optional, Mapping, Any
+from nn_lib.models.graph_utils import (
+    GraphModule,
+    get_subgraph,
+    stitch_graphs,
+)
+from typing import Optional
 from enum import Enum, auto
 
 
 class Conv1x1StitchingLayer(nn.Module):
-    def __init__(self, from_shape: tuple[int, int, int], to_shape: tuple[int, int, int]):
+    def __init__(
+        self,
+        from_shape: tuple[int, int, int],
+        to_shape: tuple[int, int, int],
+    ):
         super().__init__()
 
-        c1, h1, w1 = self.from_shape = from_shape
-        c2, h2, w2 = self.to_shape = to_shape
-
+        self.from_shape = from_shape
+        self.to_shape = to_shape
         self.conv1x1 = nn.Conv2d(
-            in_channels=c1, out_channels=c2, kernel_size=1, stride=1, padding=0, bias=True
+            in_channels=from_shape[0],
+            out_channels=to_shape[0],
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            bias=True,
         )
 
     def maybe_resize(self, x):
@@ -92,166 +103,41 @@ class Conv1x1StitchingLayer(nn.Module):
         return self.__repr__()
 
 
-class Conv1x1StitchingModel(GraphModule):
-    def __init__(
-        self,
-        model1: GraphModule,
-        layer1: str,
-        model2: GraphModule,
-        layer2: str,
-        input_shape: tuple,
-    ):
-        device = next(model1.parameters()).device
-        dummy_inputs = torch.zeros((1,) + input_shape, dtype=torch.float32, device=device)
-        reps1 = model1(dummy_inputs, named_outputs=(layer1,))[layer1]
-        reps2 = model2(dummy_inputs, named_outputs=(layer2,))[layer2]
+def create_stitching_model(
+    model1: GraphModule,
+    layer1: str,
+    model2: GraphModule,
+    layer2: str,
+    input_shape: tuple,
+) -> GraphModule:
+    device = next(model1.parameters()).device
+    dummy_data = torch.zeros((1, *input_shape), device=device)
+    reps1 = get_subgraph(model1, inputs=["x"], output=layer1)(dummy_data)
+    reps2 = get_subgraph(model2, inputs=["x"], output=layer2)(dummy_data)
+    stitching_layer = Conv1x1StitchingLayer(reps1.shape[1:], reps2.shape[1:])
 
-        model1_part1 = model1.sub_model(
-            inputs=model1.inputs,
-            outputs=[layer1],
-            default_output=layer1,
-        )
-        model1_part2 = model1.sub_model(
-            inputs=[layer1],
-            outputs=model1.outputs,
-            default_output=model1.default_output,
-        )
-        model2_part1 = model2.sub_model(
-            inputs=model2.inputs,
-            outputs=[layer2],
-            default_output=layer2,
-        )
-        model2_part2 = model2.sub_model(
-            inputs=[layer2],
-            outputs=model2.outputs,
-            default_output=model2.default_output,
-        )
-        stitching_layer = Conv1x1StitchingLayer(reps1.shape[1:], reps2.shape[1:])
-
-        arch = {
-            "model1": model1_part1.architecture(root="model1"),
+    stitched_model = stitch_graphs(
+        {
+            "model1": model1,
             "stitching_layer": stitching_layer,
-            "model2": model2_part2.architecture(root="model2"),
-        }
+            "model2": model2,
+        },
+        {
+            "model1_" + layer1: "stitching_layer_x",
+            "stitching_layer_conv1x1": "model2_" + layer2,
+        },
+        input_names=["model1_x"],
+        output_name="model2_fc"
+    )
 
-        # Tell model2_part2 that its input is the stitching layer's output
-        arch["model2"][layer2] = (arch["model2"][layer2][0], "stitching_layer")
+    # While stitch_graphs creates a 'stitching_layer' attribute, it has the wrong class. Rewrite it.
+    stitched_model.stitching_layer = stitching_layer
 
-        # Create architecture dict. Start with model1 inputs, then do a Sequential model of
-        # model1_part1, stitching_layer, model2_part2
-        super().__init__(
-            architecture=arch,
-            inputs=[f"model1/{i}" for i in model1.inputs],
-            outputs=[f"model2/{o}" for o in model2.outputs],
-            default_output=f"model2/{model2.default_output}",
-        )
+    # Get rid of parameters that are unused (2nd half of model1, 1st half of model2); these objects
+    # will still be available to the caller because they are owned by model1 and model2.
+    stitched_model.delete_all_unused_submodules()
 
-        # Store model parts in a dict (NOT a ModuleDict) because we want access to them without
-        # them counting as additional parameters or submodules.
-        self.original_model_parts = {
-            "model1_part1": model1_part1,
-            "model1_part2": model1_part2,
-            "model2_part1": model2_part1,
-            "model2_part2": model2_part2,
-        }
-
-    @staticmethod
-    def _recreate_model_from_parts(part1: GraphModule, part2: GraphModule):
-        arch = {**part1.graph, **part2.graph}
-        split_layer = part2.inputs[0]
-        arch[split_layer] = part1.graph[split_layer]
-        return GraphModule(
-            architecture=arch,
-            inputs=part1.inputs,
-            outputs=part2.outputs,
-        )
-
-    @property
-    def model1(self) -> GraphModule:
-        """Recreate the model1 part of the original model. Note that we *want* to return this as
-        a reference to the underlying model parts, not a copy, so that we can do things like
-        stitched_model.model1.load_state_dict(...) and have it update the parameters of
-        self-model in-place. The model is returned in eval mode.
-        """
-        return Conv1x1StitchingModel._recreate_model_from_parts(
-            self.original_model_parts["model1_part1"],
-            self.original_model_parts["model1_part2"],
-        ).eval()
-
-    @property
-    def model2(self) -> GraphModule:
-        """Recreate the model2 part of the original model. Note that we *want* to return this as
-        a reference to the underlying model parts, not a copy, so that we can do things like
-        stitched_model.model2.load_state_dict(...) and have it update the parameters of
-        self-model in-place. The model is returned in eval mode.
-        """
-        return Conv1x1StitchingModel._recreate_model_from_parts(
-            self.original_model_parts["model2_part1"],
-            self.original_model_parts["model2_part2"],
-        ).eval()
-
-    def init_by_regression(self, initial_inputs: torch.Tensor):
-        # Put model into eval mode to disable dropout, batchnorm, etc. for the purposes of finding
-        # good alignment between model1 and model2 parts.
-        with torch.no_grad():
-            # Put model parts into eval mode to disable dropout, batchnorm updates, etc.
-            m1p1 = self.original_model_parts["model1_part1"].eval()
-            m2p1 = self.original_model_parts["model2_part1"].eval()
-            # The default_output of m1p1 and m1p2 is already layer1 and layer2, so we can run them
-            # forward without any named_outputs.
-            self["stitching_layer"].init_by_regression(m1p1(initial_inputs), m2p1(initial_inputs))
-
-    @contextmanager
-    def freeze_all_except(
-        self, except_pattern: Optional[Iterable[str]] = None, freeze_batchnorm: bool = True
-    ):
-        if except_pattern is None:
-            except_pattern = []
-
-        except_pattern = set(except_pattern)
-
-        # Freeze all parameters, keep a record of the value of requires_grad for restoring.
-        restore = {}
-        for name, param in self.named_parameters():
-            if all(pattern not in name for pattern in except_pattern):
-                restore[name] = param.requires_grad
-                param.requires_grad_(False)
-
-        # Also ensure that all BatchNorm layers are in eval mode
-        if freeze_batchnorm:
-            for name, module in self.named_modules():
-                if isinstance(module, nn.BatchNorm2d):
-                    restore[f"{name}.training"] = module.training
-                    module.eval()
-
-        yield
-
-        # Restore the requires_grad values
-        restore = {}
-        for name, param in self.named_parameters():
-            if all(pattern not in name for pattern in except_pattern):
-                param.requires_grad_(restore.get(name, True))
-
-        # Restore the batchnorm training modes
-        if freeze_batchnorm:
-            for name, module in self.named_modules():
-                if isinstance(module, nn.BatchNorm2d):
-                    module.train(restore.get(f"{name}.training", True))
-
-    def state_dict(self, include_original_parts: bool = False, **kwargs):
-        state = super().state_dict(**kwargs)
-        if include_original_parts:
-            for name, part in self.original_model_parts.items():
-                state[name] = part.state_dict(**kwargs)
-        return state
-
-    def load_state_dict(
-        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
-    ):
-        for name, part in self.original_model_parts.items():
-            if name in state_dict:
-                part.load_state_dict(state_dict.pop(name), strict=strict, assign=assign)
-        super().load_state_dict(state_dict, strict=strict, assign=assign)
+    return stitched_model
 
 
 class StitchingStage(Enum):
@@ -274,7 +160,7 @@ STAGES_DEPENDENCIES: dict[StitchingStage, Optional[StitchingStage]] = {
 
 __all__ = [
     "Conv1x1StitchingLayer",
-    "Conv1x1StitchingModel",
+    "create_stitching_model",
     "StitchingStage",
     "STAGES_DEPENDENCIES",
 ]
