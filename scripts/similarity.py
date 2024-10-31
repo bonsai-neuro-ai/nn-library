@@ -58,9 +58,13 @@ def handle_layers_arg(
     return list(dict.fromkeys(layers_list))
 
 
+def _tensor_memory_gb(tensor: torch.Tensor) -> float:
+    return tensor.element_size() * tensor.nelement() / 2**30
+
+
 @torch.no_grad()
 def get_reps(
-    config: SimilarityConfig, dm: TorchvisionDataModuleBase, fabric: Fabric
+    config: SimilarityConfig, dm: TorchvisionDataModuleBase, fabric: Fabric, max_mem_gb: float = 8
 ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """Get/create GraphModules corresponding to model1 up through layer1 and model2 up through
     layer 2
@@ -106,16 +110,24 @@ def get_reps(
 
     progbar = tqdm(desc="Computing representations", total=config.m)
     n, reps1, reps2 = 0, defaultdict(list), defaultdict(list)
+    mem_usage = 0
     for (x1, _), (x2, _) in zip(dl1, dl2):
         n += len(x1)
 
         out1 = model1(x1)
         for k1, v1 in out1.items():
+            mem_usage += _tensor_memory_gb(v1)
             reps1[k1].append(v1.cpu())
 
         out2 = model2(x2)
         for k2, v2 in out2.items():
+            mem_usage += _tensor_memory_gb(v2)
             reps2[k2].append(v2.cpu())
+
+        # TODO - could mem pressure be fixed by streaming outputs and calculating similarity on
+        #  the fly? Or can we find some other way to address this?
+        if mem_usage > max_mem_gb:
+            raise MemoryError(f"Memory usage exceeded {max_mem_gb} GB")
 
         progbar.update(len(x1))
 
@@ -128,8 +140,10 @@ def get_reps(
     return reps1, reps2
 
 
-def run(config: SimilarityConfig, dm: TorchvisionDataModuleBase, fabric: Fabric):
-    reps1, reps2 = get_reps(config, dm, fabric)
+def run(
+    config: SimilarityConfig, dm: TorchvisionDataModuleBase, fabric: Fabric, max_mem_gb: float = 8
+):
+    reps1, reps2 = get_reps(config, dm, fabric, max_mem_gb=max_mem_gb)
 
     # Compute similarity for all pairs of layers
     progbar = tqdm(desc="Layer x layer similarity", total=len(config.layers1) * len(config.layers2))
@@ -164,8 +178,10 @@ if __name__ == "__main__":
     parser.add_argument("--expt_name", type=str, required=True)
     add_env_parser(parser)
     parser.add_dataclass_arguments(SimilarityConfig, "similarity", instantiate=True)
-    # Params governing the data module
     add_data_parser(parser)
+    # Avoid OOM errors by limiting the amount of memory used by the script
+    parser.add_argument("--max_mem_gb", type=float, default=8.0)
+    parser.metafields.update({"max_mem_gb": None})
     # CLI improvements
     parser.add_argument("--config", action="config")
     parser.add_argument("--status", action="store_true", help="Just output run status and exit.")
@@ -230,7 +246,12 @@ if __name__ == "__main__":
     # We'll set a parent run based on the args, and individual child runs for each pair of layers.
     with mlflow.start_run(run_id=logger.run_id):
         try:
-            run(config=args.similarity, dm=datamodule, fabric=Fabric(devices=1))
+            run(
+                config=args.similarity,
+                dm=datamodule,
+                fabric=Fabric(devices=1),
+                max_mem_gb=args.max_mem_gb,
+            )
         except Exception as e:
             mlflow.log_text(str(e), "error.txt")
             raise e
