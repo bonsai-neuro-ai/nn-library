@@ -1,8 +1,9 @@
 import pydot
 import warnings
+import torch
 from torch import nn
 from torch.fx import GraphModule, Graph, Node, symbolic_trace
-from typing import Iterable, Optional, assert_never
+from typing import Iterable, Optional, Any, assert_never
 from nn_lib.models.utils import squash_conv_batchnorm
 from copy import deepcopy
 
@@ -16,6 +17,7 @@ __all__ = [
     "prefix_all_nodes",
     "set_dict_outputs_by_name",
     "set_inputs_and_output_by_name",
+    "step_through_call",
     "stitch_graphs",
     "squash_all_conv_batchnorm_pairs",
     "symbolic_trace",
@@ -259,9 +261,8 @@ def squash_all_conv_batchnorm_pairs(graph_module: GraphModule) -> GraphModule:
         conv_unique_name = "_".join(conv.target.split(".")[len(common_prefix) :])
         bn_unique_name = "_".join(bn.target.split(".")[len(common_prefix) :])
         squashed_name = ".".join(common_prefix + [f"{conv_unique_name}_{bn_unique_name}"])
-        squashed_conv = squash_conv_batchnorm(
-            new_module.get_submodule(conv.target), new_module.get_submodule(bn.target)
-        )
+        conv_module, bn_module = new_module.get_submodule(conv.target), new_module.get_submodule(bn.target)
+        squashed_conv = squash_conv_batchnorm(conv_module, bn_module)
         new_module.add_submodule(squashed_name, squashed_conv)
         with new_module.graph.inserting_before(conv):
             new_node = new_module.graph.call_module(
@@ -285,3 +286,35 @@ def to_dot(graph: Graph) -> pydot.Dot:
         for user in node.users:
             dot.add_edge(pydot.Edge(node.name, user.name))
     return dot
+
+
+def step_through_call(graph_module: GraphModule, context={}) -> Any:
+    """Step through a call to a GraphModule, printing the name of each node and the shape of each
+    tensor as it passes through the node."""
+
+    def _get_arg(arg: Any):
+        if isinstance(arg, Node):
+            return context[arg.name]
+        return arg
+
+    for node in graph_module.graph.nodes:
+        match node.op:
+            case "placeholder":
+                assert node.name in context, f"Missing input {node.name}"
+            case "get_attr":
+                context[node.name] = getattr(graph_module, node.target)
+            case "call_module":
+                module = graph_module.get_submodule(node.target)
+                args = [_get_arg(arg) for arg in node.args]
+                kwargs = {k: _get_arg(v) for k, v in node.kwargs.items()}
+                context[node.name] = module(*args, **kwargs)
+            case "call_function":
+                the_function = node.target
+                args = [_get_arg(arg) for arg in node.args]
+                kwargs = {k: _get_arg(v) for k, v in node.kwargs.items()}
+                context[node.name] = the_function(*args, **kwargs)
+            case "output":
+                args = [_get_arg(arg) for arg in node.args]
+                return args[0]
+            case _:
+                assert_never(node.op)

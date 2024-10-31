@@ -59,7 +59,10 @@ def squash_conv_batchnorm(conv_layer: nn.Conv2d, bn_layer: nn.BatchNorm2d) -> nn
         kernel_size=conv_layer.kernel_size,
         stride=conv_layer.stride,
         padding=conv_layer.padding,
+        dilation=conv_layer.dilation,
+        groups=conv_layer.groups,
         bias=True,
+        padding_mode=conv_layer.padding_mode,
     )
     fused_conv.weight = nn.Parameter(new_conv_weight)
     fused_conv.bias = nn.Parameter(new_conv_bias)
