@@ -1,9 +1,15 @@
 from .lit_classifier import LitClassifier
 from jsonargparse import ArgumentParser
-from typing import Type
+from typing import Type, assert_never
 from torch import nn
 from torchvision.models import get_model as tv_get_model, get_model_weights as tv_get_weights
-from torchvision.transforms._presets import SemanticSegmentation
+from torchvision.transforms._presets import (
+    ObjectDetection,
+    ImageClassification,
+    VideoClassification,
+    SemanticSegmentation,
+    OpticalFlow,
+)
 
 
 # def add_parser(
@@ -26,15 +32,21 @@ def get_pretrained_model(name: str) -> nn.Module:
     return tv_get_model(name, weights=weights)
 
 
-def get_default_transforms(name: str):
+def get_default_transforms(name: str, max_size: int = 256):
     weights = tv_get_weights(name).DEFAULT
     trans = weights.transforms()
 
-    # TODO - is this bugfix sensible? Some models have a single resize size which has been causing
-    #  problems with jagged tensor sizes.
-    if isinstance(trans, SemanticSegmentation):
-        if len(trans.resize_size) == 1:
-            trans.resize_size = [trans.resize_size[0]] * 2
+    match trans:
+        case SemanticSegmentation() | ImageClassification() | VideoClassification():
+            # TODO - is this bugfix sensible? Some models have a single resize size which has
+            #  been causing problems with jagged tensor sizes.
+            if len(trans.resize_size) == 1:
+                trans.resize_size = [trans.resize_size[0]] * 2
+            trans.resize_size = [min(max_size, size) for size in trans.resize_size]
+        case ObjectDetection() | SemanticSegmentation() | OpticalFlow():
+            pass
+        case _:
+            assert_never(trans)
     return trans
 
 
