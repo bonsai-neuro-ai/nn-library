@@ -14,6 +14,7 @@ from abc import ABCMeta, abstractmethod
 from tqdm.auto import tqdm
 from typing import Union, assert_never
 from enum import Enum, auto
+import warnings
 
 
 TransformType = Union[
@@ -120,7 +121,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             case _:
                 assert_never(self.type)
         if not isinstance(transform, expected_type):
-            raise ValueError(f"Expected transform of type {expected_type}, got {type(transform)}")
+            warnings.warn(f"Expected transform of type {expected_type}, got {type(transform)}")
         self._override_default_transform = transform
 
     @property
@@ -185,7 +186,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             self.train_ds_split,
             batch_size=self.bs,
             num_workers=self.nw,
-            persistent_workers=True,
+            persistent_workers=self.nw > 0,
             generator=torch.Generator().manual_seed(self.seed),
             **kwargs,
         )
@@ -195,7 +196,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             self.val_ds_split,
             batch_size=self.bs,
             num_workers=self.nw,
-            persistent_workers=True,
+            persistent_workers=self.nw > 0,
             generator=torch.Generator().manual_seed(self.seed),
             **kwargs,
         )
@@ -205,7 +206,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             self.test_ds,
             batch_size=self.bs,
             num_workers=self.nw,
-            persistent_workers=True,
+            persistent_workers=self.nw > 0,
             generator=torch.Generator().manual_seed(self.seed),
             **kwargs,
         )
