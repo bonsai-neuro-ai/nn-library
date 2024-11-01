@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import re
 import torch
 import jsonargparse
-from typing import assert_never
+from typing import Optional, assert_never
 from torch import nn
 from copy import deepcopy
 from collections import defaultdict
@@ -64,86 +64,91 @@ def _tensor_memory_gb(tensor: torch.Tensor) -> float:
 
 @torch.no_grad()
 def get_reps(
-    config: SimilarityConfig, dm: TorchvisionDataModuleBase, fabric: Fabric, max_mem_gb: float = 8
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-    """Get/create GraphModules corresponding to model1 up through layer1 and model2 up through
-    layer 2
-    """
-    # Load pretrained models
-    model1 = symbolic_trace(get_pretrained_model(config.model1))
-    model2 = symbolic_trace(get_pretrained_model(config.model2))
+    model_name: str,
+    layers_arg: str | list[str],
+    dm: TorchvisionDataModuleBase,
+    m: int,
+    inputs: bool = False,
+    fabric: Optional[Fabric] = None,
+    max_mem_gb: float = 8,
+) -> dict[str, torch.Tensor]:
+    """Get reps for one model and all its named layers."""
+    # Load pretrained model
+    model = get_pretrained_model(model_name)
 
-    # Squash all conv/bn layers to simplify fine-tuning analyses. While this may change the layer1
-    # and layer2 names, it's much saner to squash *before* stitching, otherwise the stitched model
-    # would have distinct convolutional submodules from the original two models.
-    model1 = squash_all_conv_batchnorm_pairs(model1)
-    model2 = squash_all_conv_batchnorm_pairs(model2)
+    # Squash all conv/bn layers to simplify fine-tuning analyses. While this may change the layer
+    # names, we trust the user to provide the correct layer names in the layers argument.
+    model = squash_all_conv_batchnorm_pairs(symbolic_trace(model))
 
     # Parse the layers argument
-    config.layers1 = handle_layers_arg(model1, config.layers1, inputs=config.inputs)
-    config.layers2 = handle_layers_arg(model2, config.layers2, inputs=config.inputs)
+    layers = handle_layers_arg(model, layers_arg, inputs=inputs)
 
-    # Configure the models to output a dict of {name: tensor} pairs
-    set_dict_outputs_by_name(model1.graph, outputs=config.layers1)
-    model1.recompile()
-    set_dict_outputs_by_name(model2.graph, outputs=config.layers2)
-    model2.recompile()
+    # Configure the model to output a dict of {name: tensor} pairs
+    set_dict_outputs_by_name(model.graph, outputs=layers)
+    model.recompile()
 
-    model1 = fabric.setup_module(model1)
-    model2 = fabric.setup_module(model2)
+    if fabric is not None:
+        model = fabric.setup_module(model)
 
     # (Maybe) update the datamodule for each model.
-    dm.seed = config.seed
     dm.prepare_data()
-    dm1 = deepcopy(dm)
-    dm1.default_transform = get_default_transforms(config.model1)
-    dm2 = deepcopy(dm)
-    dm2.default_transform = get_default_transforms(config.model2)
-    dm1.setup("test")
-    dm2.setup("test")
+    dm.default_transform = get_default_transforms(model_name)
+    dm.setup("test")
+    dl = fabric.setup_dataloaders(dm.test_dataloader(shuffle=True))
 
-    # Using seeded dataloaders ensures that the same data is used for both models even if both are
-    # set to shuffle=True.
-    dl1, dl2 = fabric.setup_dataloaders(
-        dm1.test_dataloader(shuffle=True), dm2.test_dataloader(shuffle=True)
-    )
-
-    progbar = tqdm(desc="Computing representations", total=config.m)
-    n, reps1, reps2 = 0, defaultdict(list), defaultdict(list)
+    progbar = tqdm(desc="Computing representations", total=m)
+    n = 0
     mem_usage = 0
-    for (x1, _), (x2, _) in zip(dl1, dl2):
-        n += len(x1)
-
-        out1 = model1(x1)
-        for k1, v1 in out1.items():
-            mem_usage += _tensor_memory_gb(v1)
-            reps1[k1].append(v1.cpu())
-
-        out2 = model2(x2)
-        for k2, v2 in out2.items():
-            mem_usage += _tensor_memory_gb(v2)
-            reps2[k2].append(v2.cpu())
+    reps: defaultdict[str, list[torch.Tensor]] = defaultdict(list)
+    for x, _ in dl:
+        for k, v in model(x).items():
+            mem_usage += _tensor_memory_gb(v)
+            reps[k].append(v.cpu())
 
         # TODO - could mem pressure be fixed by streaming outputs and calculating similarity on
         #  the fly? Or can we find some other way to address this?
         if mem_usage > max_mem_gb:
             raise MemoryError(f"Memory usage exceeded {max_mem_gb} GB")
 
-        progbar.update(len(x1))
+        n += len(x)
+        progbar.update(len(x))
 
-        if n >= config.m:
+        if n >= m:
             break
 
-    reps1 = {k: torch.cat(v, dim=0)[: config.m] for k, v in reps1.items()}
-    reps2 = {k: torch.cat(v, dim=0)[: config.m] for k, v in reps2.items()}
-
-    return reps1, reps2
+    # Fun fact: doing the return statement with dict comprehension can lead to out-of-memory errors.
+    # Previously, this was `return {k: torch.cat(v, dim=0)[:m] for k, v in reps.items()}`. But then
+    # reps[k] and return[k] would be in memory at the same time, effectively doubling the memory
+    # usage. By overwriting the reps dict and then copying it to a new dict, we avoid this issue.
+    for k, v in reps.items():
+        reps[k] = torch.cat(v, dim=0)[:m]
+    return dict(reps.items())
 
 
 def run(
     config: SimilarityConfig, dm: TorchvisionDataModuleBase, fabric: Fabric, max_mem_gb: float = 8
 ):
-    reps1, reps2 = get_reps(config, dm, fabric, max_mem_gb=max_mem_gb)
+    # Using seeded dataloaders ensures that the same data is used for both models even if both
+    # are set to shuffle=True.
+    dm.seed = config.seed
+    reps1 = get_reps(
+        config.model1,
+        config.layers1,
+        dm,
+        config.m,
+        inputs=config.inputs,
+        fabric=fabric,
+        max_mem_gb=max_mem_gb,
+    )
+    reps2 = get_reps(
+        config.model2,
+        config.layers2,
+        dm,
+        config.m,
+        inputs=config.inputs,
+        fabric=fabric,
+        max_mem_gb=max_mem_gb,
+    )
 
     # Compute similarity for all pairs of layers
     progbar = tqdm(desc="Layer x layer similarity", total=len(config.layers1) * len(config.layers2))
