@@ -2,6 +2,7 @@ from .lit_classifier import LitClassifier
 from jsonargparse import ArgumentParser
 from typing import Type, assert_never
 from torch import nn
+from torch.fx import Graph, symbolic_trace
 from torchvision.models import get_model as tv_get_model, get_model_weights as tv_get_weights
 from torchvision.transforms._presets import (
     ObjectDetection,
@@ -26,6 +27,8 @@ from torchvision.transforms._presets import (
 #         meta.update({key: baseclass.__metafields__})
 #         setattr(parser, "metafields", meta)
 
+def get_model_graph(name: str) -> Graph:
+    return symbolic_trace(tv_get_model(name)).graph
 
 def get_pretrained_model(name: str) -> nn.Module:
     weights = tv_get_weights(name).DEFAULT
@@ -54,6 +57,7 @@ __all__ = [
     "LitClassifier",
     # "ResNet",  # TODO - fix resnet after refactor
     # "add_parser",  # TODO - fix parser after refactor
+    "get_model_graph",
     "get_pretrained_model",
     "get_default_transforms",
 ]
