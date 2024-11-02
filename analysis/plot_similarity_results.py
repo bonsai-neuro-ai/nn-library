@@ -4,17 +4,17 @@ import pandas as pd
 import numpy as np
 from nn_lib.env import add_parser as add_env_parser
 from nn_lib.models import get_model_graph
+from nn_lib.models.graph_utils import get_topology_for_subset_of_layers
 from sklearn.manifold import MDS
 from sklearn.decomposition import PCA
 from typing import Optional
 from collections import defaultdict
-import seaborn as sns
 import matplotlib.pyplot as plt
-import numpy.testing as npt
 
 
 def load_data(expt_name, tracking_uri, similarity_method="LinearCKA"):
     """Return DF where each row is some model1.layer1 compared to some model2.layer2."""
+    # TODO - allow restriction to certain models/layers here
     mlflow.set_tracking_uri(tracking_uri)
     # By searching for runs where metrics."{method}" > 0, we filter out parent runs (where metric
     # will be nan)
@@ -62,8 +62,8 @@ def find_embedding_dim(pair_dist: np.ndarray, threshold: float = 0.95):
             low = mid + 1
 
     record = sorted(record)
-    plt.hlines([target_stress], 1, len(pair_dist), colors="k", linestyles="--")
-    plt.vlines([low], 0, target_stress, colors="k", linestyles="--")
+    plt.hlines([target_stress], 1, len(pair_dist), colors="k", linestyles="dashed")
+    plt.vlines([low], stress_n, stress_1, colors="k", linestyles="dashed")
     plt.plot(*zip(*record), marker=".")
     plt.xlabel("dim")
     plt.ylabel("stress")
@@ -90,18 +90,43 @@ def argsort_layers(model_name, layers):
     return indices
 
 
-def plot_model_paths(xyz: np.ndarray, columns, dims_xy, ax=None):
-    ax = ax or plt.gca()
-    points_by_model = defaultdict(list)
-    layer_names_by_model = defaultdict(list)
-    for i, (model, layer) in enumerate(columns):
-        points_by_model[model].append(xyz[i, dims_xy])
-        layer_names_by_model[model].append(layer)
+def get_model_topologies(columns):
+    topologies = {}
+    for model in set(model for model, _ in columns):
+        layers = [layer for m, layer in columns if m == model]
+        # TODO - reduce dependency on instantiating a full model here just to inspect its topology
+        # TODO - aux layers not showing up?
+        topologies[model] = get_topology_for_subset_of_layers(
+            get_model_graph(model, squash=True), layers
+        )
+    return topologies
 
-    for model in points_by_model:
-        points = np.array(points_by_model[model])
-        resort_idx = argsort_layers(model, layer_names_by_model[model])
-        ax.plot(*points[resort_idx, :].T, label=model, marker=".")
+
+def plot_model_paths(
+    xyz: np.ndarray, columns, dims_xy=(0, 1), topologies=None, ax=None, cmap="tab10"
+):
+    ax = ax or plt.gca()
+    points_by_layer_by_model = defaultdict(dict)
+    for i, (model, layer) in enumerate(columns):
+        points_by_layer_by_model[model][layer] = xyz[i, dims_xy]
+
+    if topologies is None:
+        topologies = get_model_topologies(columns)
+
+    cm = plt.get_cmap(cmap)
+    for i, model in enumerate(points_by_layer_by_model):
+        layers = list(points_by_layer_by_model[model].keys())
+        points = np.array(list(points_by_layer_by_model[model].values()))
+        ax.plot(*points[0], marker=".", color=cm(i), label=model)
+        for j in range(1, len(points)):
+            ax.plot(*points[j], marker=".", color=cm(i))
+            # ax.text(*points[j], layers[j], fontsize=8, color=cm(i))
+
+        for layer_name, connections in topologies[model].items():
+            for connected_layer_name in connections:
+                xy0 = points[layers.index(layer_name)]
+                xy1 = points[layers.index(connected_layer_name)]
+                ax.plot(*zip(xy0, xy1), color=cm(i))
 
 
 if __name__ == "__main__":
@@ -118,8 +143,12 @@ if __name__ == "__main__":
     assert np.allclose(dist, dist.T, atol=1e-3)
     dist = (dist + dist.T) / 2
 
+    # Precompute layer:layer topology for each model for the purposes of drawing.
+    topologies = get_model_topologies(tbl.columns)
+
     # Embed the distances into a lower-dimensional space
-    dim = find_embedding_dim(dist, threshold=0.99)
+    # dim = find_embedding_dim(dist, threshold=0.99)
+    dim = 11
     print("Using embedding dimension:", dim)
     mds_xyz = embed(dist, dim)
     xyz = PCA(n_components=dim).fit_transform(mds_xyz)
@@ -131,19 +160,21 @@ if __name__ == "__main__":
             if j >= i:
                 ax[i, j].remove()
             else:
-                plot_model_paths(xyz, tbl.columns, dims_xy=(j, i), ax=ax[i, j])
+                plot_model_paths(
+                    xyz, tbl.columns, dims_xy=(j, i), ax=ax[i, j], topologies=topologies
+                )
                 ax[i, j].set_xlabel(f"dim {j+1}")
                 ax[i, j].set_ylabel(f"dim {i+1}")
                 ax[i, j].axis("equal")
                 ax[i, j].grid()
-    ax[0,0].legend()
+    ax[0, 0].legend()
     fig.tight_layout()
     plt.show()
 
     # 3D plot of the first 3 PCs
-    fig = plt.figure(figsize=(5,5))
-    ax = fig.add_subplot(111, projection='3d')
-    plot_model_paths(xyz, tbl.columns, dims_xy=(0, 1, 2), ax=ax)
+    fig = plt.figure(figsize=(5, 5))
+    ax = fig.add_subplot(111, projection="3d")
+    plot_model_paths(xyz, tbl.columns, dims_xy=(0, 1, 2), ax=ax, topologies=topologies)
     ax.legend()
     ax.set_xlabel("PC 1")
     ax.set_ylabel("PC 2")

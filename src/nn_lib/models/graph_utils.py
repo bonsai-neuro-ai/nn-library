@@ -14,6 +14,7 @@ __all__ = [
     "Node",
     "get_nodes_by_name",
     "get_subgraph",
+    "get_topology_for_subset_of_layers",
     "prefix_all_nodes",
     "set_dict_outputs_by_name",
     "set_inputs_and_output_by_name",
@@ -318,3 +319,37 @@ def step_through_call(graph_module: GraphModule, context={}) -> Any:
                 return args[0]
             case _:
                 assert_never(node.op)
+
+def get_topology_for_subset_of_layers(graph: Graph, layer_names: Iterable[str]) -> dict[str, set[str]]:
+    """Get the topology of a subset of layers in a graph. The topology is represented as a dict
+    where the keys are the names of the layers and the values are lists of the names of the
+    layers that the key layer depends on.
+
+    Example: Given the graph A -> B -> C -> D, the topology of the subset of layers [A, C] would
+    be {"A": [], "C": ["A"]} since C depends on A.
+
+    Args:
+        graph: The graph to analyze.
+        layer_names: The names of the layers to get the topology for.
+
+    Returns:
+        A dict representing the topology of the subset of layers.
+    """
+    key_layers = set(layer_names)
+    topology = {layer: set() for layer in key_layers}
+    # depends_on_keys[node] = set of key nodes that a non-key node depends on.
+    depends_on_keys = {node.name: set() for node in graph.nodes}
+
+    # Assuming traversal is already in topological-sorted order
+    for node in graph.nodes:
+        if node.name in key_layers:
+            # 'Key' nodes are marked as dependent on themselves
+            depends_on_keys[node.name] = {node.name}
+            for parent in node.all_input_nodes:
+                topology[node.name].update(depends_on_keys.get(parent.name, set()))
+        else:
+            # All other nodes inherit dependencies from their input nodes
+            for parent in node.all_input_nodes:
+                depends_on_keys[node.name].update(depends_on_keys.get(parent.name, set()))
+
+    return topology
