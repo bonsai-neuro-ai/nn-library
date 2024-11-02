@@ -35,6 +35,13 @@ def prepare_models(
 ):
     """Get/create three GraphModules corresponding to model1, model2, and their stitched combo."""
 
+    # Create 2 copies of the datamodule in case they have different transforms; the stitched module
+    # will use the datamodule for model1
+    datamodule1 = deepcopy(dm)
+    datamodule1.default_transform = get_default_transforms(config.model1)
+    datamodule2 = deepcopy(dm)
+    datamodule2.default_transform = get_default_transforms(config.model2)
+
     # Load pretrained models
     model1 = symbolic_trace(get_pretrained_model(config.model1))
     model2 = symbolic_trace(get_pretrained_model(config.model2))
@@ -47,11 +54,12 @@ def prepare_models(
 
     # Create combined model
     stitched_model = create_stitching_model(
-        model1,
-        config.layer1,
-        model2,
-        config.layer2,
-        input_shape=dm.shape,
+        model1=model1,
+        layer1=config.layer1,
+        input_shape1=datamodule1.shape,
+        model2=model2,
+        layer2=config.layer2,
+        input_shape2=datamodule2.shape,
     )
 
     # Restore the state of the stitched model from a previous stage if applicable
@@ -75,13 +83,6 @@ def prepare_models(
             )
         prior_state = torch.load(prev_stage_run.iloc[0]["artifact_uri"] + "/snapshot.pt")
         stitched_model.load_state_dict(prior_state["state_dict"])
-
-    # Create 2 copies of the datamodule in case they have different transforms; the stitched module
-    # will use the datamodule for model1
-    datamodule1 = deepcopy(dm)
-    datamodule1.default_transform = get_default_transforms(config.model1)
-    datamodule2 = deepcopy(dm)
-    datamodule2.default_transform = get_default_transforms(config.model2)
 
     # TODO - something needs refactoring because this return statement is awful
     return model1, model2, stitched_model, datamodule1, datamodule2
@@ -154,14 +155,20 @@ def run(
 
     def test_wrapper(
         model: nn.Module, dm: TorchvisionDataModuleBase, logger_prefix: str
-    ) -> Mapping[str, float]:
+    ) -> Mapping[str, float] | None:
         # Bugfix: in order to re-use the same trainer to call test() multiple times, we need to
         # clear the results of the test loop. Otherwise, the results of the previous test() call
         # will have messed up devices on the non-rank-0 processes. See here:
         # https://github.com/Lightning-AI/pytorch-lightning/issues/18803#issuecomment-1839788106
         tr.test_loop._results.clear()
         log._prefix = logger_prefix
-        return tr.test(LitClassifier(model, **classifier_kwargs), dm)[0]
+        try:
+            return tr.test(LitClassifier(model, **classifier_kwargs), dm)[0]
+        except TypeError:
+            # This error happens e.g. if the model and the task are not aligned, like if we're
+            # testing a segmentation model on a classification task.
+            # TODO - model1 and model2 should be able to specify their own tasks
+            return None
 
     # Take a snapshot of model performance on the test set
     with torch.no_grad():
@@ -205,32 +212,43 @@ if __name__ == "__main__":
     check_status_then_exit = args.status
     delattr(args, "status")
 
-    # Search for other runs with the same params but different stages
+    # Search for other runs with the same params
     params = args.as_dict()
-    del params["stitching"]["stage"]
     prior_runs_same_params = search_runs_by_params(
         experiment_name=args.expt_name,
         params=params,
         tracking_uri=args.env.mlflow_tracking_uri,
         skip_fields=getattr(parser, "metafields", {}),
+        finished_only=False,
     )
     if len(prior_runs_same_params) > 0:
-        mask = prior_runs_same_params["params.stitching/stage"] == str(args.stitching.stage)
-        prior_runs_same_stage = prior_runs_same_params[mask]
+        finished_runs_same_params = prior_runs_same_params[
+            prior_runs_same_params["status"] == "FINISHED"
+        ]
     else:
-        prior_runs_same_stage = pd.DataFrame()
+        finished_runs_same_params = pd.DataFrame()
 
     if check_status_then_exit:
-        if len(prior_runs_same_stage) > 0:
-            # Note that results["status"] is populated by mlflow, not by us. The "tags.status" field
-            # is custom and is populated by us.  TODO: do we need the custom one?
-            print(*prior_runs_same_stage["tags.status"], sep=", ")
+        if len(prior_runs_same_params) > 0:
+            print(*prior_runs_same_params["status"], sep=", ")
         else:
-            print(JobStatus.DOES_NOT_EXIST)
+            print("DOES_NOT_EXIST")
         exit()
-    elif len(prior_runs_same_stage) > 0:
+    elif len(finished_runs_same_params) > 0:
         print("Skipping")
         exit(0)
+
+    # Search for other *finished* runs with the same params but different stages; some of these
+    # may need to be loaded
+    params = args.as_dict()
+    del params["stitching"]["stage"]
+    prior_runs_same_params_any_stage = search_runs_by_params(
+        experiment_name=args.expt_name,
+        params=params,
+        tracking_uri=args.env.mlflow_tracking_uri,
+        skip_fields=getattr(parser, "metafields", {}),
+        finished_only=True,
+    )
 
     instantiated_args = parser.instantiate_classes(args)
     datamodule = instantiated_args.data
@@ -259,7 +277,7 @@ if __name__ == "__main__":
             dm=datamodule,
             tr=trainer,
             log=logger,
-            prev_matching_runs=prior_runs_same_params,
+            prev_matching_runs=prior_runs_same_params_any_stage,
         )
         logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.SUCCESS)
     except Exception as e:

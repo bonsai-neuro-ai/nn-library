@@ -106,14 +106,18 @@ class Conv1x1StitchingLayer(nn.Module):
 def create_stitching_model(
     model1: GraphModule,
     layer1: str,
+    input_shape1: tuple,
     model2: GraphModule,
     layer2: str,
-    input_shape: tuple,
+    input_shape2: tuple,
 ) -> GraphModule:
     device = next(model1.parameters()).device
-    dummy_data = torch.zeros((1, *input_shape), device=device)
-    reps1 = get_subgraph(model1, inputs=["x"], output=layer1)(dummy_data)
-    reps2 = get_subgraph(model2, inputs=["x"], output=layer2)(dummy_data)
+    reps1 = get_subgraph(model1, inputs=["x"], output=layer1)(
+        torch.zeros((1, *input_shape1), device=device)
+    )
+    reps2 = get_subgraph(model2, inputs=["x"], output=layer2)(
+        torch.zeros((1, *input_shape2), device=device)
+    )
     stitching_layer = Conv1x1StitchingLayer(reps1.shape[1:], reps2.shape[1:])
 
     stitched_model = stitch_graphs(
@@ -127,7 +131,7 @@ def create_stitching_model(
             "stitching_layer_conv1x1": "model2_" + layer2,
         },
         input_names=["model1_x"],
-        output_name="model2_fc"
+        output_name="model2_fc",
     )
 
     # While stitch_graphs creates a 'stitching_layer' attribute, it has the wrong class. Rewrite it.
