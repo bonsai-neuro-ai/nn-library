@@ -6,7 +6,7 @@ from torchvision.transforms import Compose, Normalize, RandomHorizontalFlip, Ran
 
 class CIFAR10DataModule(TorchvisionDataModuleBase):
     name = "cifar10"
-    shape = (3, 32, 32)
+    _default_shape = (3, 32, 32)
     num_classes = 10
     type = TorchvisionDatasetType.IMAGE_CLASSIFICATION
 

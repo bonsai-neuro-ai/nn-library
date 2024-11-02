@@ -37,6 +37,11 @@ class TorchvisionDatasetType(Enum):
 class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
     __metafields__ = frozenset({"root_dir", "num_workers"})
 
+    _default_shape: tuple[int, int, int] = None
+    name: str = None
+    type: TorchvisionDatasetType = None
+
+
     def __init__(
         self,
         root_dir: str = "data",
@@ -55,19 +60,15 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         self._override_default_transform = None
 
     @property
-    @abstractmethod
     def shape(self):
-        pass
-
-    @property
-    @abstractmethod
-    def name(self):
-        pass
-
-    @property
-    @abstractmethod
-    def type(self) -> TorchvisionDatasetType:
-        pass
+        # The .shape property defaults to the cls._default_shape attribute unless the default
+        # transform has been overridden. In that case, the shape is determined by the output of
+        # the transform. Conversely, if the transform has not been set, the default transform
+        # gets its shape from the cls._default_shape attribute. Basically, the shape attribute
+        # should never be set directly, but rather by setting the default transform.
+        if self._override_default_transform is not None:
+            return self._override_default_transform(torch.zeros(1, *self._default_shape)).shape[1:]
+        return self._default_shape
 
     @property
     def num_classes(self):
@@ -89,8 +90,8 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         match self.type:
             case TorchvisionDatasetType.IMAGE_CLASSIFICATION:
                 return ImageClassification(
-                    crop_size=self.shape[1:],
-                    resize_size=self.shape[1:],
+                    crop_size=self._default_shape[1],
+                    resize_size=self._default_shape[1],
                     mean=self.metadata["mean"],
                     std=self.metadata["std"],
                 )
@@ -99,7 +100,11 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             case TorchvisionDatasetType.VIDEO_CLASSIFICATION:
                 raise NotImplementedError()  # TODO: TorchvisionDatasetType.VIDEO_CLASSIFICATION
             case TorchvisionDatasetType.SEMANTIC_SEGMENTATION:
-                raise NotImplementedError()  # TODO: TorchvisionDatasetType.SEMANTIC_SEGMENTATION
+                return SemanticSegmentation(
+                    resize_size=self._default_shape[1],
+                    mean=self.metadata["mean"],
+                    std=self.metadata["std"],
+                )
             case TorchvisionDatasetType.OPTICAL_FLOW:
                 raise NotImplementedError()  # TODO: TorchvisionDatasetType.OPTICAL_FLOW
             case _:

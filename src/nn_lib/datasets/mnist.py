@@ -5,7 +5,7 @@ from nn_lib.datasets.base import TorchvisionDataModuleBase, TorchvisionDatasetTy
 
 class MNISTDataModule(TorchvisionDataModuleBase):
     name = "mnist"
-    shape = (1, 28, 28)
+    _default_shape = (1, 28, 28)
     num_classes = 10
     type = TorchvisionDatasetType.IMAGE_CLASSIFICATION
 

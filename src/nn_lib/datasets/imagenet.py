@@ -6,7 +6,7 @@ import yaml
 
 class ImageNetDataModule(TorchvisionDataModuleBase):
     name = "imagenet"
-    shape = (3, 224, 224)
+    _default_shape = (3, 224, 224)
     num_classes = 1000
     type = TorchvisionDatasetType.IMAGE_CLASSIFICATION
 
