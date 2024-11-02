@@ -75,7 +75,7 @@ class LitClassifier(lit.LightningModule, Generic[T]):
 
     def configure_optimizers(self):
         opt = AdamW([p for p in self.parameters() if p.requires_grad], lr=self.lr)
-        sched = ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=3, min_lr=1e-8)
+        sched = ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=3, min_lr=self.lr / 32)
         if isinstance(self.trainer.val_check_interval, float):
             raise NotImplementedError(
                 "Not yet handling val_check_interval as a float for increased LR scheduler updates"
