@@ -9,6 +9,9 @@ from sklearn.manifold import MDS
 from sklearn.decomposition import PCA
 from typing import Optional
 from collections import defaultdict
+from pydot import graph_from_edges
+from io import BytesIO
+from PIL import Image
 import matplotlib.pyplot as plt
 
 
@@ -67,6 +70,7 @@ def find_embedding_dim(pair_dist: np.ndarray, threshold: float = 0.95):
     plt.plot(*zip(*record), marker=".")
     plt.xlabel("dim")
     plt.ylabel("stress")
+    plt.yscale("log")
     plt.show()
 
     return low
@@ -129,6 +133,19 @@ def plot_model_paths(
                 ax.plot(*zip(xy0, xy1), color=cm(i))
 
 
+def plot_topology(topology, ax=None):
+    ax = ax or plt.gca()
+    edges = []
+    for layer, connections in topology.items():
+        edges.extend((layer, connected_layer) for connected_layer in connections)
+    graph = graph_from_edges(edges)
+    image = Image.open(BytesIO(graph.create_png(prog="dot")))
+    ax.imshow(image)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.axis("off")
+
+
 if __name__ == "__main__":
     parser = jsonargparse.ArgumentParser(default_config_files=["configs/local/env.yaml"])
     parser.add_argument("--expt_name", type=str, required=True)
@@ -136,6 +153,7 @@ if __name__ == "__main__":
     add_env_parser(parser)
     args = parser.instantiate_classes(parser.parse_args())
 
+    print("Loading data...")
     df = load_data(args.expt_name, args.env.mlflow_tracking_uri, similarity_method=args.metric)
     tbl = pairwise_similarity_pivot_table(df, metric=args.metric, symmetric=True)
 
@@ -144,27 +162,35 @@ if __name__ == "__main__":
     dist = (dist + dist.T) / 2
 
     # Precompute layer:layer topology for each model for the purposes of drawing.
+    print("Getting model topologies...")
     topologies = get_model_topologies(tbl.columns)
+    for mdl, topo in topologies.items():
+        plt.figure()
+        plot_topology(topo)
+        plt.title(mdl)
+        plt.show()
 
     # Embed the distances into a lower-dimensional space
-    # dim = find_embedding_dim(dist, threshold=0.99)
-    dim = 11
+    print("Finding best dimensionality and doing MDS...")
+    dim = find_embedding_dim(dist, threshold=0.99)
     print("Using embedding dimension:", dim)
     mds_xyz = embed(dist, dim)
     xyz = PCA(n_components=dim).fit_transform(mds_xyz)
 
+    print("Plotting...")
+
     # Plot grid of the first 5 PCs
-    fig, ax = plt.subplots(5, 5, figsize=(15, 15))
-    for i in range(5):
-        for j in range(5):
-            if j >= i:
+    fig, ax = plt.subplots(4, 4, figsize=(12, 12))
+    for i in range(4):
+        for j in range(4):
+            if j > i:
                 ax[i, j].remove()
             else:
                 plot_model_paths(
-                    xyz, tbl.columns, dims_xy=(j, i), ax=ax[i, j], topologies=topologies
+                    xyz, tbl.columns, dims_xy=(j, i + 1), ax=ax[i, j], topologies=topologies
                 )
                 ax[i, j].set_xlabel(f"dim {j+1}")
-                ax[i, j].set_ylabel(f"dim {i+1}")
+                ax[i, j].set_ylabel(f"dim {i+2}")
                 ax[i, j].axis("equal")
                 ax[i, j].grid()
     ax[0, 0].legend()
