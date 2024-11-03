@@ -26,6 +26,10 @@ __all__ = [
 ]
 
 
+# TODO - write a helper for tracing R-CNN type models (where the model forward() contains an input-
+#  dependent loop). See https://github.com/pytorch/TensorRT/issues/1871#issuecomment-1543226473
+
+
 def get_nodes_by_name(graph: Graph, names: str | Iterable[str]) -> list[Node]:
     """Get nodes from a graph by name. The name argument may be a string or an iterable of strings.
 

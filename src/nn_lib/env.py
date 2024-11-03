@@ -12,6 +12,8 @@ class EnvConfig:
     mlflow_tracking_uri: Optional[str] = None
     data_root: Optional[str] = None
     torch_matmul_precision: Optional[str] = None
+    # TODO - TORCH_HOME environment variable / some other way to configure the torch cache directory
+    # TODO - on init, set some global variables like precision, torch home, etc.
 
 
 def add_parser(parser: ArgumentParser, key: str = "env"):

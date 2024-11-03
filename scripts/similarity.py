@@ -18,7 +18,6 @@ import torch
 import jsonargparse
 from typing import Optional, assert_never
 from torch import nn
-from copy import deepcopy
 from collections import defaultdict
 from tqdm.auto import tqdm
 import mlflow
