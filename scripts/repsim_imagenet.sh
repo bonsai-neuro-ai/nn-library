@@ -15,6 +15,8 @@ export CUDA_VISIBLE_DEVICES=1
 MODELS=(
   "fcn_resnet50"
   "deeplabv3_resnet50"
+  "vit_b_16"
+  "vit_b_32"
   "resnet18"
   "resnet34"
   "resnet50"
@@ -23,6 +25,8 @@ MODELS=(
 LAYER_REGEXES=(
   "(add.*|classifier.*|aux_classifier.*)"
   "(add.*|classifier.*|aux_classifier.*|cat)"
+  "(add.*|heads_head)"
+  "(add.*|heads_head)"
   "(add.*|fc)"
   "(add.*|fc)"
   "(add.*|fc)"
