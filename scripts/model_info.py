@@ -1,6 +1,12 @@
-from nn_lib.models import get_pretrained_model
+import torch
+from nn_lib.datasets import ImageNetDataModule
+from nn_lib.models import get_pretrained_model, get_default_transforms
 from torch.fx import symbolic_trace
-from nn_lib.models.graph_utils import to_dot, squash_all_conv_batchnorm_pairs
+from nn_lib.models.graph_utils import (
+    to_dot,
+    squash_all_conv_batchnorm_pairs,
+    set_dict_outputs_by_name,
+)
 
 if __name__ == "__main__":
     import argparse
@@ -13,9 +19,26 @@ if __name__ == "__main__":
         action="store_true",
         help="If set, squash all conv+batchnorm pairs before doing anything else",
     )
-    parser.add_argument("--print-layers", action="store_true", help="Print layer names")
-    parser.add_argument("--print-graph", action="store_true", help="Print layer names")
-    parser.add_argument("--image", action="store_true", help="Save a png of the architecture graph")
+    parser.add_argument(
+        "--print-layers",
+        action="store_true",
+        help="Print layer names",
+    )
+    parser.add_argument(
+        "--print-layers-sizes",
+        action="store_true",
+        help="Print layer names and tensor shapes",
+    )
+    parser.add_argument(
+        "--print-graph",
+        action="store_true",
+        help="Print layer names",
+    )
+    parser.add_argument(
+        "--image",
+        action="store_true",
+        help="Save a png of the architecture graph",
+    )
     args = parser.parse_args()
 
     model = get_pretrained_model(args.model)
@@ -34,3 +57,15 @@ if __name__ == "__main__":
         image = to_dot(model.graph).create_png(prog="dot")
         with open(f"{args.model}.png", "wb") as f:
             f.write(image)
+
+    if args.print_layers_sizes:
+        datamodule = ImageNetDataModule()  # TODO - generalize
+        datamodule.default_transform = get_default_transforms(args.model)
+        example_input = torch.zeros((1,) + datamodule.shape)
+        set_dict_outputs_by_name(
+            model.graph, [node.name for node in model.graph.nodes if node.op != "output"]
+        )
+        model.recompile()
+        for k, v in model(example_input).items():
+            if torch.is_tensor(v):
+                print(k, v.shape[1:], sep="\t")
