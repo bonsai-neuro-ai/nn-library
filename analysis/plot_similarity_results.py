@@ -38,7 +38,7 @@ def hotfix_model2color(model_name):
             return cmap(6)
 
 
-def load_data(expt_name, tracking_uri, similarity_method="LinearCKA"):
+def load_data(expt_name, tracking_uri, similarity_method="LinearCKA") -> pd.DataFrame:
     """Return DF where each row is some model1.layer1 compared to some model2.layer2."""
     # TODO - allow restriction to certain models/layers here
     mlflow.set_tracking_uri(tracking_uri)
@@ -241,7 +241,7 @@ def plot_layer_layer_distances(pair_distances, columns):
         plt.plot([b + 0.5] * 2, [-0.5, len(pair_distances) - 0.5], color="k")
         plt.plot([-0.5, len(pair_distances) - 0.5], [b + 0.5] * 2, color="k")
     # Indicate model names in between boundaries
-    boundaries = [0] + boundaries
+    boundaries = [-0.5] + [b + 0.5 for b in boundaries]
     tick_locations = [(boundaries[i] + boundaries[i + 1]) / 2 for i in range(len(boundaries) - 1)]
     plt.tick_params(
         top=False,
@@ -276,6 +276,22 @@ if __name__ == "__main__":
     dist = (dist + dist.T) / 2
 
     plot_layer_layer_distances(dist, tbl.columns)
+
+    subset_of_interest = [
+        ("fcn_resnet50", "add_15"),
+        ("deeplabv3_resnet50", "add_15"),
+        ("resnet18", "add_7"),
+        ("resnet34", "add_15"),
+        ("resnet50", "add_15"),
+        ("vit_b_16", "add_24"),
+        ("vit_b_32", "add_24"),
+    ]
+    indices = [i for i, col in enumerate(tbl.columns) if col in subset_of_interest]
+    assert len(indices) == len(subset_of_interest)
+    tbl2 = tbl.iloc[indices].iloc[:, indices]
+    plot_layer_layer_distances(np.arccos((tbl2.to_numpy() + tbl2.to_numpy().T) / 2), tbl2.columns)
+
+    exit(0)
 
     # Precompute layer:layer topology for each model for the purposes of drawing.
     print("Getting model topologies...")
