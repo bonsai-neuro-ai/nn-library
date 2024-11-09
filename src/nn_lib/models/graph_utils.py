@@ -13,6 +13,8 @@ __all__ = [
     "Graph",
     "Node",
     "get_nodes_by_name",
+    "get_inputs",
+    "get_output",
     "get_subgraph",
     "get_topology_for_subset_of_layers",
     "prefix_all_nodes",
@@ -50,6 +52,16 @@ def get_nodes_by_name(graph: Graph, names: str | Iterable[str]) -> list[Node]:
         raise ValueError("Not all nodes are present in the graph:", missing_names)
 
     return list(lookup_node_by_name.values())
+
+
+def get_inputs(graph: Graph) -> list[Node]:
+    """Get the input nodes of a graph."""
+    return [node for node in graph.nodes if node.op == "placeholder"]
+
+
+def get_output(graph: Graph) -> Node:
+    """Get the output node of a graph."""
+    return next(node for node in graph.nodes if node.op == "output")
 
 
 def _copy_module_new_graph(graph_module: GraphModule, name: Optional[str] = None) -> GraphModule:
@@ -266,7 +278,9 @@ def squash_all_conv_batchnorm_pairs(graph_module: GraphModule) -> GraphModule:
         conv_unique_name = "_".join(conv.target.split(".")[len(common_prefix) :])
         bn_unique_name = "_".join(bn.target.split(".")[len(common_prefix) :])
         squashed_name = ".".join(common_prefix + [f"{conv_unique_name}_{bn_unique_name}"])
-        conv_module, bn_module = new_module.get_submodule(conv.target), new_module.get_submodule(bn.target)
+        conv_module, bn_module = new_module.get_submodule(conv.target), new_module.get_submodule(
+            bn.target
+        )
         squashed_conv = squash_conv_batchnorm(conv_module, bn_module)
         new_module.add_submodule(squashed_name, squashed_conv)
         with new_module.graph.inserting_before(conv):
@@ -324,7 +338,10 @@ def step_through_call(graph_module: GraphModule, context={}) -> Any:
             case _:
                 assert_never(node.op)
 
-def get_topology_for_subset_of_layers(graph: Graph, layer_names: Iterable[str]) -> dict[str, set[str]]:
+
+def get_topology_for_subset_of_layers(
+    graph: Graph, layer_names: Iterable[str]
+) -> dict[str, set[str]]:
     """Get the topology of a subset of layers in a graph. The topology is represented as a dict
     where the keys are the names of the layers and the values are lists of the names of the
     layers that the key layer depends on.

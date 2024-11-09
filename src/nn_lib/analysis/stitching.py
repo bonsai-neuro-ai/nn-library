@@ -5,6 +5,8 @@ from nn_lib.models.graph_utils import (
     GraphModule,
     get_subgraph,
     stitch_graphs,
+    get_inputs,
+    get_output,
 )
 from typing import Optional
 from enum import Enum, auto
@@ -130,8 +132,8 @@ def create_stitching_model(
             "model1_" + layer1: "stitching_layer_x",
             "stitching_layer_conv1x1": "model2_" + layer2,
         },
-        input_names=["model1_x"],
-        output_name="model2_fc",
+        input_names=["model1_" + node.name for node in get_inputs(model1.graph)],
+        output_name="model2_" + get_output(model2.graph).args[0].name,
     )
 
     # While stitch_graphs creates a 'stitching_layer' attribute, it has the wrong class. Rewrite it.
