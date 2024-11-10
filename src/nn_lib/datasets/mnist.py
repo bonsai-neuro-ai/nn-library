@@ -1,5 +1,4 @@
 from torchvision.datasets import MNIST
-from torchvision.transforms import ToTensor
 from nn_lib.datasets.base import TorchvisionDataModuleBase, TorchvisionDatasetType
 
 
@@ -8,10 +7,6 @@ class MNISTDataModule(TorchvisionDataModuleBase):
     _default_shape = (1, 28, 28)
     num_classes = 10
     type = TorchvisionDatasetType.IMAGE_CLASSIFICATION
-
-    @property
-    def transform(self):
-        return ToTensor()
 
     def train_data(self, transform=None, target_transform=None, transforms=None):
         if transforms is not None:

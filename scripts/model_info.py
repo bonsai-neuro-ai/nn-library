@@ -1,6 +1,7 @@
 import torch
 from nn_lib.datasets import ImageNetDataModule
-from nn_lib.models import get_pretrained_model, get_default_transforms
+from nn_lib.models import get_pretrained_model
+from nn_lib.datasets import get_tv_default_transforms
 from torch.fx import symbolic_trace
 from nn_lib.models.graph_utils import (
     to_dot,
@@ -60,7 +61,7 @@ if __name__ == "__main__":
 
     if args.print_layers_sizes:
         datamodule = ImageNetDataModule()  # TODO - generalize
-        datamodule.default_transform = get_default_transforms(args.model)
+        datamodule.default_transform = get_tv_default_transforms(args.model)
         example_input = torch.zeros((1,) + datamodule.shape)
         set_dict_outputs_by_name(
             model.graph, [node.name for node in model.graph.nodes if node.op != "output"]

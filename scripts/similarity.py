@@ -1,7 +1,8 @@
 import pandas as pd
 from lightning.fabric import Fabric
 from lightning.pytorch.loggers import MLFlowLogger
-from nn_lib.models import get_pretrained_model, get_default_transforms
+from nn_lib.models import get_pretrained_model
+from nn_lib.datasets.transforms import get_tv_default_transforms
 from nn_lib.models.graph_utils import (
     symbolic_trace,
     squash_all_conv_batchnorm_pairs,
@@ -91,7 +92,7 @@ def get_reps(
 
     # (Maybe) update the datamodule for each model.
     dm.prepare_data()
-    dm.default_transform = get_default_transforms(model_name)
+    dm.test_transform = get_tv_default_transforms(model_name, max_size=dm._default_shape[1:])
     dm.setup("test")
     dl = fabric.setup_dataloaders(dm.test_dataloader(shuffle=True))
 

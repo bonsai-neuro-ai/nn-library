@@ -5,6 +5,7 @@ mlflow
 numpy
 pandas
 parse
+pycocotools
 pydot
 pyyaml
 scipy

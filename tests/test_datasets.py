@@ -26,7 +26,7 @@ class TestDatasetLoadsInEnv(unittest.TestCase):
         data.setup("fit")
         dl = data.train_dataloader()
         batch = next(iter(dl))
-        assert batch is not None
+        self.assertEqual(batch[0].shape[1:], data._default_shape)
 
     def test_cifar10_train(self):
         data = CIFAR10DataModule(root_dir=self.env.data_root)
@@ -34,7 +34,7 @@ class TestDatasetLoadsInEnv(unittest.TestCase):
         data.setup("fit")
         dl = data.train_dataloader()
         batch = next(iter(dl))
-        assert batch is not None
+        self.assertEqual(batch[0].shape[1:], data._default_shape)
 
     def test_cifar100_train(self):
         data = CIFAR100DataModule(root_dir=self.env.data_root)
@@ -42,7 +42,7 @@ class TestDatasetLoadsInEnv(unittest.TestCase):
         data.setup("fit")
         dl = data.train_dataloader()
         batch = next(iter(dl))
-        assert batch is not None
+        self.assertEqual(batch[0].shape[1:], data._default_shape)
 
     def test_imagenet_train(self):
         data = ImageNetDataModule(root_dir=self.env.data_root)
@@ -50,7 +50,7 @@ class TestDatasetLoadsInEnv(unittest.TestCase):
         data.setup("fit")
         dl = data.train_dataloader()
         batch = next(iter(dl))
-        assert batch is not None
+        self.assertEqual(batch[0].shape[1:], data._default_shape)
 
     def test_coco_train(self):
         data = CocoDetectionDataModule(root_dir=self.env.data_root)
@@ -58,4 +58,4 @@ class TestDatasetLoadsInEnv(unittest.TestCase):
         data.setup("fit")
         dl = data.train_dataloader()
         batch = next(iter(dl))
-        assert batch is not None
+        self.assertEqual(batch[0].shape[1:], data._default_shape)

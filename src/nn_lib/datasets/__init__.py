@@ -1,7 +1,9 @@
 from .mnist import MNISTDataModule
 from .cifar import CIFAR10DataModule, CIFAR100DataModule
 from .imagenet import ImageNetDataModule
+from .coco_semantic_segmentation import CocoDetectionDataModule
 from .base import TorchvisionDataModuleBase
+from .transforms import get_tv_default_transforms
 from jsonargparse import ArgumentParser
 
 

@@ -1,7 +1,8 @@
 import lightning as lit
 from lightning.pytorch.loggers import MLFlowLogger
 import pandas as pd
-from nn_lib.models import LitClassifier, get_pretrained_model, get_default_transforms
+from nn_lib.models import LitClassifier, get_pretrained_model
+from nn_lib.datasets.transforms import get_tv_default_transforms
 from nn_lib.models.graph_utils import symbolic_trace, get_subgraph, squash_all_conv_batchnorm_pairs
 from nn_lib.models.utils import frozen
 from nn_lib.datasets import add_parser as add_data_parser, TorchvisionDataModuleBase
@@ -36,11 +37,17 @@ def prepare_models(
     """Get/create three GraphModules corresponding to model1, model2, and their stitched combo."""
 
     # Create 2 copies of the datamodule in case they have different transforms; the stitched module
-    # will use the datamodule for model1
+    # will use the datamodule for model1. The transforms are set to the default TV transforms, but
+    # we only care about the targets for datamodule2 because this is the one that will be evaluated
+    # in the downstream task.
     datamodule1 = deepcopy(dm)
-    datamodule1.default_transform = get_default_transforms(config.model1)
+    datamodule1.train_transform = datamodule1.test_transform = get_tv_default_transforms(
+        config.model1, max_size=dm._default_shape[1:], ignore_targets=True
+    )
     datamodule2 = deepcopy(dm)
-    datamodule2.default_transform = get_default_transforms(config.model2)
+    datamodule2.train_transform = datamodule2.test_transform = get_tv_default_transforms(
+        config.model2, max_size=dm._default_shape[1:], ignore_targets=False
+    )
 
     # Load pretrained models
     model1 = symbolic_trace(get_pretrained_model(config.model1))
