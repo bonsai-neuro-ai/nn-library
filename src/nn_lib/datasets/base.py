@@ -14,6 +14,7 @@ from abc import ABCMeta, abstractmethod
 from tqdm.auto import tqdm
 from typing import Union, assert_never
 from enum import Enum, auto
+from pathlib import Path
 import warnings
 
 
@@ -44,7 +45,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
 
     def __init__(
         self,
-        root_dir: str = "data",
+        root_dir: str | Path = "data",
         train_val_split: float = 11 / 12,
         seed: int = 8675309,
         batch_size: int = 64,
@@ -55,7 +56,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         self.seed = seed
         self.bs = batch_size
         self.nw = num_workers
-        self.root_dir = root_dir
+        self.root_dir = Path(root_dir)
         self.train_ds_split, self.val_ds_split, self.test_ds = None, None, None
         self._override_default_transform = None
 
@@ -139,15 +140,15 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
 
     @property
     def data_dir(self):
-        return os.path.join(self.root_dir, self.name)
+        return self.root_dir / self.name
 
     @abstractmethod
-    def train_data(self, transform=None):
+    def train_data(self, transform=None, target_transform=None, transforms=None):
         """Download the dataset if needed; must be implemented by subclass and return train
         dataset."""
 
     @abstractmethod
-    def test_data(self, transform=None):
+    def test_data(self, transform=None, target_transform=None, transforms=None):
         """Download the dataset if needed; must be implemented by subclass and return train
         dataset."""
 
@@ -159,7 +160,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
 
         metadata_file = os.path.join(self.data_dir, "metadata.pkl")
 
-        if not os.path.exists(metadata_file) and self.default_transform is not None:
+        if not os.path.exists(metadata_file):
             # Calculate mean and std of each channel of the dataset.
             im = next(iter(d))[0]
             num_channels = im.shape[0]
@@ -174,7 +175,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
 
     def setup(self, stage: str):
         # Assign Train/val split(s) for use in Dataloaders
-        if stage == "fit":
+        if stage in ("fit", "val"):
             data_full = self.train_data(transform=self.train_transform)
             n_train = int(len(data_full) * self.train_val_split)
             n_val = len(data_full) - n_train

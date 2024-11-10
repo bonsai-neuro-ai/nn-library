@@ -18,11 +18,23 @@ class ImageNetDataModule(TorchvisionDataModuleBase):
         else:
             self.class_ids = None
 
-    def train_data(self, transform=None):
-        return ImageFolder(root=os.path.join(self.data_dir, "train"), transform=transform)
+    def train_data(self, transform=None, target_transform=None, transforms=None):
+        if transforms is not None:
+            raise ValueError("transforms argument must be None for ImageNet")
+        return ImageFolder(
+            root=os.path.join(self.data_dir, "train"),
+            transform=transform,
+            target_transform=target_transform,
+        )
 
-    def test_data(self, transform=None):
-        return ImageFolder(root=os.path.join(self.data_dir, "val"), transform=transform)
+    def test_data(self, transform=None, target_transform=None, transforms=None):
+        if transforms is not None:
+            raise ValueError("transforms argument must be None for ImageNet")
+        return ImageFolder(
+            root=os.path.join(self.data_dir, "val"),
+            transform=transform,
+            target_transform=target_transform,
+        )
 
     def class_id_to_label(self, class_id):
         if self.class_ids is None:
