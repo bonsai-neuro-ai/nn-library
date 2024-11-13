@@ -16,7 +16,7 @@ import torch
 import jsonargparse
 from typing import Mapping, assert_never
 from torch import nn
-from scripts.utils import save_as_artifact, JobStatus
+from scripts.utils import save_as_artifact
 from copy import deepcopy
 
 
@@ -78,7 +78,7 @@ def prepare_models(
             )
         prev_stage_run = prev_matching_runs[
             (prev_matching_runs["params.stitching/stage"] == str(prior_stage))
-            & (prev_matching_runs["tags.status"] == str(JobStatus.SUCCESS))
+            & (prev_matching_runs["status"] == "FINISHED")
         ]
         if len(prev_stage_run) == 0:
             raise ValueError(
@@ -275,7 +275,6 @@ if __name__ == "__main__":
 
     # TODO - get rid of custom status handling; replace with `with mlflow.start_run` block
     try:
-        logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.RUNNING)
         run(
             config=args.stitching,
             classifier_kwargs=args.classifier.as_dict(),
@@ -284,8 +283,8 @@ if __name__ == "__main__":
             log=logger,
             prev_matching_runs=prior_runs_same_params_any_stage,
         )
-        logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.SUCCESS)
+        logger.finalize(status="success")
     except Exception as e:
-        logger.experiment.set_tag(logger.run_id, key="status", value=JobStatus.ERROR)
         logger.experiment.log_text(run_id=logger.run_id, text=str(e), artifact_file="error.txt")
+        logger.finalize(status="failed")
         raise e

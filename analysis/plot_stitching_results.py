@@ -8,7 +8,7 @@ import numpy.testing as npt
 
 def load_data(expt_name, tracking_uri):
     mlflow.set_tracking_uri(tracking_uri)
-    df = mlflow.search_runs(experiment_names=[expt_name], filter_string="tags.status='SUCCESS'")
+    df = mlflow.search_runs(experiment_names=[expt_name], filter_string="status='FINISHED'")
     print(*df.columns, sep="\n\t")
     print(f"Loaded {len(df)} runs")
     print("Columns:")
