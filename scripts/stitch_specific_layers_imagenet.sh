@@ -10,22 +10,22 @@ fi
 python -c "import nn_lib" 2>/dev/null || (echo "Put nn_lib on the PYTHONPATH or run from nn-library/src" && exit 1)
 
 MODELS=(
-  "fcn_resnet50"
-  "deeplabv3_resnet50"
   "resnet18"
   "resnet34"
   "resnet50"
   "vit_b_16"
   "vit_b_32"
+  "fcn_resnet50"
+  "deeplabv3_resnet50"
 )
 LAYERS=(
-  "add_15"
-  "add_15"
   "add_7"
   "add_15"
   "add_15"
   "add_24"
   "add_24"
+  "add_15"
+  "add_15"
 )
 
 STAGES=(
