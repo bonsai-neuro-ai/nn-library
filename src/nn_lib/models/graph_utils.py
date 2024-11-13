@@ -324,12 +324,20 @@ def step_through_call(graph_module: GraphModule, context={}, callback=None) -> A
             case "placeholder":
                 assert node.name in context, f"Missing input {node.name}"
             case "get_attr":
-                context[node.name] = getattr(graph_module, node.target)
+                obj = graph_module
+                for part in node.target.split("."):
+                    obj = getattr(obj, part)
+                context[node.name] = obj
             case "call_module":
                 module = graph_module.get_submodule(node.target)
                 args = [_get_arg(arg) for arg in node.args]
                 kwargs = {k: _get_arg(v) for k, v in node.kwargs.items()}
                 context[node.name] = module(*args, **kwargs)
+            case "call_method":
+                self_obj, *args = [_get_arg(arg) for arg in node.args]
+                kwargs = {k: _get_arg(v) for k, v in node.kwargs.items()}
+                method = getattr(self_obj, node.target)
+                context[node.name] = method(*args, **kwargs)
             case "call_function":
                 the_function = node.target
                 args = [_get_arg(arg) for arg in node.args]
