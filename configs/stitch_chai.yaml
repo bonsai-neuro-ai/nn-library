@@ -1,0 +1,13 @@
+data:
+  class_path: nn_lib.datasets.ImageNetDataModule
+  init_args:
+      batch_size: 100
+      num_workers: 20
+classifier:
+  lr: 1e-6
+  stopping_patience: 3
+  scheduler_patience: 0
+trainer:
+  max_epochs: 20
+  val_check_interval: 100
+  limit_val_batches: 100

@@ -54,10 +54,7 @@ for stage in "${STAGES[@]}"; do
         --stitching.model2="${model2}" \
         --stitching.layer2="${layer2}" \
         --stitching.stage="${stage}" \
-        --config=configs/data/imagenet.yaml \
-        --config=configs/trainer/classification.yaml \
-        --trainer.val_check_interval=100 \
-        --trainer.limit_val_batches=50
+        --config=configs/stitch_chai.yaml
     done
   done
 done
