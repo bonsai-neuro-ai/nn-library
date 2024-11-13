@@ -158,7 +158,7 @@ class StitchingStage(Enum):
 
 STAGES_DEPENDENCIES: dict[StitchingStage, Optional[StitchingStage]] = {
     StitchingStage.RANDOM_INIT: None,
-    StitchingStage.REGRESSION_INIT: StitchingStage.RANDOM_INIT,
+    StitchingStage.REGRESSION_INIT: None,
     StitchingStage.TRAIN_STITCHING_LAYER: StitchingStage.REGRESSION_INIT,
     StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM: StitchingStage.REGRESSION_INIT,
 }
