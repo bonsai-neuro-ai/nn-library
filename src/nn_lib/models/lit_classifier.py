@@ -17,8 +17,10 @@ class LitClassifier(lit.LightningModule, Generic[T]):
         self,
         model: T,
         num_classes: int,
-        label_smoothing: float = 0.0,
         lr: float = 1e-3,
+        label_smoothing: float = 0.0,
+        scheduler_patience: int = 3,
+        stopping_patience: int = 10,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["model"])
@@ -30,6 +32,8 @@ class LitClassifier(lit.LightningModule, Generic[T]):
         }
         self.lr = lr
         self.num_classes = num_classes
+        self.scheduler_patience = scheduler_patience
+        self.stopping_patience = stopping_patience
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
@@ -75,7 +79,12 @@ class LitClassifier(lit.LightningModule, Generic[T]):
 
     def configure_optimizers(self):
         opt = AdamW([p for p in self.parameters() if p.requires_grad], lr=self.lr)
-        sched = ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=3, min_lr=self.lr / 32)
+        if self.scheduler_patience <= 0:
+            return opt
+
+        sched = ReduceLROnPlateau(
+            opt, mode="min", factor=0.5, patience=self.scheduler_patience, min_lr=self.lr / 32
+        )
         if isinstance(self.trainer.val_check_interval, float):
             raise NotImplementedError(
                 "Not yet handling val_check_interval as a float for increased LR scheduler updates"
@@ -97,7 +106,7 @@ class LitClassifier(lit.LightningModule, Generic[T]):
         #  than once per epoch and using reduced validation batches
         return [
             ModelCheckpoint(monitor="val_loss", save_top_k=1, mode="min", save_last=True),
-            EarlyStopping(monitor="val_loss", patience=10),
+            EarlyStopping(monitor="val_loss", patience=self.stopping_patience),
         ]
 
     def state_dict(self, *args, **kwargs) -> dict:
