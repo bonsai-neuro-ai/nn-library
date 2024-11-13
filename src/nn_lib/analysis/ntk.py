@@ -1,9 +1,11 @@
 import torch
 from torch import nn
-from torch.func import functional_call, vmap, vjp, jvp, jacrev
-from typing import Callable, Literal, Optional
+from torch.func import functional_call, vmap, vjp, jvp, jacrev, grad
+from typing import Callable, Literal, Optional, assert_never
 from torch.fx import symbolic_trace
-from nn_lib.utils import vmap_debug
+
+
+# TODO - replace memory exceptions with smart handling of chunk_size in vmap
 
 
 def _create_functional_model_as_fn_of_params(model: nn.Module):
@@ -133,6 +135,22 @@ def ntk_vjp(
     batch_x2: Optional[torch.Tensor] = None,
     mode: Literal["full", "trace", "diagonal"] = "full",
 ) -> torch.Tensor:
+    match mode:
+        case "full":
+            return ntk_vjp_full(model, batch_x1, batch_x2)
+        case "trace":
+            return ntk_vjp_trace(model, batch_x1, batch_x2)
+        case "diagonal":
+            return ntk_vjp_diagonal(model, batch_x1, batch_x2)
+        case _:
+            assert_never(mode)
+
+
+def ntk_vjp_full(
+    model: nn.Module,
+    batch_x1: torch.Tensor,
+    batch_x2: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
     """Calculate the M1xM2 NTK matrix for a model on a given batch of M inputs. Equivalent to
     calling ntk_in_memory to get the M1xM2xOxO matrix, then summing over the output dimensions,
     but much, much more memory-efficient.
@@ -188,7 +206,91 @@ def ntk_vjp(
         batch_x2 = batch_x1
     result = vmap(vmap(get_oxo_ntk, (None, 0)), (0, None))(batch_x1, batch_x2)
 
-    return _reduce_ntk(result, mode)
+    return result
+
+
+def ntk_vjp_diagonal(
+    model: nn.Module,
+    batch_x1: torch.Tensor,
+    batch_x2: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """See ntk_vjp_full; this is an optimized version for mode="trace"."""
+    model_fn, weights = _create_functional_model_as_fn_of_params(model)
+    n_output = model_fn(weights, batch_x1[0]).numel()
+    m1 = len(batch_x1)
+    m2 = len(batch_x2) if batch_x2 is not None else m1
+    numel_intermediate = m1 * m2 * n_output
+    memory_gb = numel_intermediate * 4 / 1e9
+    if memory_gb > 10.0:
+        raise RuntimeError(
+            "NTK calculation will use too much memory:"
+            f"{m1} x {m2} x {n_output} elements in the NTK, "
+            f"using {memory_gb:.2f} GB of memory!"
+        )
+
+    basis = torch.eye(n_output, dtype=batch_x1.dtype, device=batch_x1.device).view(n_output, -1)
+
+    def get_trace_ntk(x1, x2):
+        def get_ntk_vv(vec):
+            # Isolate the input -> output[j] function and get grads wrt params for x1 and x2
+            jac_fn1 = grad(lambda w: torch.sum(model_fn(w, x1) * vec), argnums=0)
+            jac_fn2 = grad(lambda w: torch.sum(model_fn(w, x2) * vec), argnums=0)
+
+            # Compute the (scalar) value for Gram(x1, x2)_{jj}
+            return sum(
+                torch.sum(jac1 * jac2)
+                for jac1, jac2 in zip(jac_fn1(weights).values(), jac_fn2(weights).values())
+            )
+
+        return vmap(get_ntk_vv, chunk_size=100)(basis)
+
+    if batch_x2 is None:
+        batch_x2 = batch_x1
+    result = vmap(vmap(get_trace_ntk, (None, 0)), (0, None))(batch_x1, batch_x2)
+
+    return result
+
+
+def ntk_vjp_trace(
+    model: nn.Module,
+    batch_x1: torch.Tensor,
+    batch_x2: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """See ntk_vjp_full; this is an optimized version for mode="trace"."""
+    model_fn, weights = _create_functional_model_as_fn_of_params(model)
+    n_output = model_fn(weights, batch_x1[0]).numel()
+    m1 = len(batch_x1)
+    m2 = len(batch_x2) if batch_x2 is not None else m1
+    numel_intermediate = m1 * m2 * n_output
+    memory_gb = numel_intermediate * 4 / 1e9
+    if memory_gb > 10.0:
+        raise RuntimeError(
+            "NTK calculation will use too much memory:"
+            f"{m1} x {m2} x {n_output} elements in the NTK, "
+            f"using {memory_gb:.2f} GB of memory!"
+        )
+
+    basis = torch.eye(n_output, dtype=batch_x1.dtype, device=batch_x1.device).view(n_output, -1)
+
+    def get_trace_ntk(x1, x2):
+        def get_ntk_vv(vec):
+            # Isolate the input -> output[j] function and get grads wrt params for x1 and x2
+            jac_fn1 = grad(lambda w: torch.sum(model_fn(w, x1) * vec), argnums=0)
+            jac_fn2 = grad(lambda w: torch.sum(model_fn(w, x2) * vec), argnums=0)
+
+            # Compute the (scalar) value for Gram(x1, x2)_{jj}
+            return sum(
+                torch.sum(jac1 * jac2)
+                for jac1, jac2 in zip(jac_fn1(weights).values(), jac_fn2(weights).values())
+            )
+
+        return torch.sum(vmap(get_ntk_vv, chunk_size=100)(basis))
+
+    if batch_x2 is None:
+        batch_x2 = batch_x1
+    result = vmap(vmap(get_trace_ntk, (None, 0)), (0, None))(batch_x1, batch_x2)
+
+    return result
 
 
 if __name__ == "__main__":
@@ -211,6 +313,11 @@ if __name__ == "__main__":
     print("NTK matrix shape:", g.shape)
 
     start = time.time()
-    g = ntk_vjp(model.to("cuda:0"), x.to("cuda:0"))
-    print("Time taken (ntk_vjp):", time.time() - start)
+    g = ntk_vjp_trace(model.to("cuda:0"), x.to("cuda:0"))
+    print("Time taken (ntk_vjp_trace):", time.time() - start)
+    print("NTK matrix shape:", g.shape)
+
+    start = time.time()
+    g = ntk_vjp_full(model.to("cuda:0"), x.to("cuda:0"))
+    print("Time taken (ntk_vjp_full):", time.time() - start)
     print("NTK matrix shape:", g.shape)
