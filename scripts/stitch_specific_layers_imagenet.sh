@@ -13,8 +13,8 @@ MODELS=(
   "resnet18"
   "resnet34"
   "resnet50"
-  "vit_b_16"
-  "vit_b_32"
+#  "vit_b_16"
+#  "vit_b_32"
   "fcn_resnet50"
   "deeplabv3_resnet50"
 )
@@ -22,8 +22,8 @@ LAYERS=(
   "add_7"
   "add_15"
   "add_15"
-  "add_24"
-  "add_24"
+#  "add_24"
+#  "add_24"
   "add_15"
   "add_15"
 )

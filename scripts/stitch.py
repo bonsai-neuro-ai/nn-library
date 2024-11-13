@@ -60,6 +60,8 @@ def prepare_models(
     model2 = squash_all_conv_batchnorm_pairs(model2)
 
     # Create combined model
+    # TODO - BUG HERE. Vision Transformer models cannot use the Conv1x1 pattern since they don't
+    #  have spatial feature maps, but `create_stitching_model` currently assumes spatial features.
     stitched_model = create_stitching_model(
         model1=model1,
         layer1=config.layer1,
