@@ -1,12 +1,10 @@
 import pydot
 import warnings
-import torch
 from torch import nn
 from torch.fx import GraphModule, Graph, Node, symbolic_trace
 from typing import Iterable, Optional, Any, assert_never
 from nn_lib.models.utils import squash_conv_batchnorm
 from copy import deepcopy
-
 
 __all__ = [
     "GraphModule",
@@ -307,14 +305,19 @@ def to_dot(graph: Graph) -> pydot.Dot:
     return dot
 
 
-def step_through_call(graph_module: GraphModule, context={}) -> Any:
+def step_through_call(graph_module: GraphModule, context={}, callback=None) -> Any:
     """Step through a call to a GraphModule, printing the name of each node and the shape of each
     tensor as it passes through the node."""
 
     def _get_arg(arg: Any):
         if isinstance(arg, Node):
             return context[arg.name]
-        return arg
+        elif isinstance(arg, list):
+            return [_get_arg(a) for a in arg]
+        elif isinstance(arg, dict):
+            return {k: _get_arg(v) for k, v in arg.items()}
+        else:
+            return arg
 
     for node in graph_module.graph.nodes:
         match node.op:
@@ -337,6 +340,8 @@ def step_through_call(graph_module: GraphModule, context={}) -> Any:
                 return args[0]
             case _:
                 assert_never(node.op)
+        if callback is not None:
+            callback(node, context[node.name])
 
 
 def get_topology_for_subset_of_layers(
