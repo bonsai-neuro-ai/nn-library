@@ -1,10 +1,11 @@
 from torch import nn
 import lightning as lit
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
+from lightning.pytorch.tuner import Tuner
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchmetrics import Accuracy
-from typing import Union, Sequence, Any, TypeVar, Generic
+from typing import Union, Sequence, Any, TypeVar, Generic, Literal
 
 
 T = TypeVar("T")
@@ -17,7 +18,7 @@ class LitClassifier(lit.LightningModule, Generic[T]):
         self,
         model: T,
         num_classes: int,
-        lr: float = 1e-3,
+        lr: float | Literal["auto"] = "auto",
         label_smoothing: float = 0.0,
         scheduler_patience: int = 3,
         stopping_patience: int = 10,
@@ -43,6 +44,18 @@ class LitClassifier(lit.LightningModule, Generic[T]):
         for metric in self.metrics.values():
             metric.to(device)
         return out
+
+    def on_fit_start(self) -> None:
+        if self.lr == "auto":
+            if self.trainer.num_devices > 1:
+                raise ValueError("Tuning is not supported with multi-GPU training.")
+
+            tuner = Tuner(self.trainer)
+            tuner.lr_find(self, datamodule=self.trainer.datamodule)
+
+            print("Suggested learning rate:", self.lr)
+
+        self.logger.    log_hyperparams({"initial_lr": self.lr})
 
     def training_step(self, batch, batch_idx):
         x, y = batch

@@ -16,7 +16,7 @@ import torch
 import jsonargparse
 from typing import Mapping, assert_never
 from torch import nn
-from scripts.utils import save_as_artifact, JobStatus, tune_before_training
+from scripts.utils import save_as_artifact, JobStatus
 from copy import deepcopy
 
 
@@ -139,7 +139,6 @@ def run(
             # model because the underlying modules are shared.
             with frozen(model1, model2, freeze_batchnorm=True):
                 wrapped_model = LitClassifier(stitched_model, **classifier_kwargs)
-                tune_before_training(tr, wrapped_model, datamodule1)
                 tr.fit(wrapped_model, datamodule1)
             # Load the best checkpoint from fitting for snapshotting below
             wrapped_model.load_state_dict(
@@ -151,7 +150,6 @@ def run(
             # model because the underlying modules are shared.
             with frozen(model1, freeze_batchnorm=True):
                 wrapped_model = LitClassifier(stitched_model, **classifier_kwargs)
-                tune_before_training(tr, wrapped_model, datamodule1)
                 tr.fit(wrapped_model, datamodule1)
             # Load the best checkpoint from fitting for snapshotting below
             wrapped_model.load_state_dict(
