@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Optional, Callable, Generator, Tuple, Any, TypeVar, Iterable, Union, assert_never
 from torch import nn
 from mlflow.entities import Run
+import itertools
+from tqdm.auto import tqdm
 
 
 T = TypeVar("T")
@@ -206,6 +208,51 @@ def _iter_artifacts(run_or_uri: RunOrURI) -> Generator[Path, None, None]:
             yield from _iter_artifacts(file)
 
 
+def vmap_debug(fn, in_axes=None, out_axes=None, progbar: bool = False) -> Callable:
+    """Debugging version of torch.func.vmap that does things in an explicit python loop"""
+
+    def iter_axis(tensor: torch.Tensor, axis: int) -> Generator[torch.Tensor, None, None]:
+        if axis is None:
+            yield tensor
+        else:
+            for i in range(tensor.size(axis)):
+                yield tensor.select(axis, i)
+
+    def wrapped(*args):
+        nonlocal in_axes, out_axes
+        if in_axes is None:
+            in_axes = tuple(range(len(args)))
+        out_collection_shape = tuple(
+            arg.size(axis) for arg, axis in zip(args, in_axes) if axis is not None
+        )
+        if out_axes is None:
+            out_axes = tuple(range(len(out_collection_shape)))
+
+        if not isinstance(out_axes, tuple):
+            out_axes = tuple(out_axes)
+
+        assert len(args) == len(in_axes), "Need one input per input axis"
+        assert len(out_collection_shape) == len(out_axes), "Need one output axis per input axis"
+
+        # Create an iterator for all combinations of args. Non-mapped args are repeated.
+        results = []
+        iterator = itertools.product(*[iter_axis(arg, axis) for arg, axis in zip(args, in_axes)])
+        if progbar:
+            iterator = tqdm(
+                iterator, total=torch.tensor(out_collection_shape).prod().item(), leave=False
+            )
+        for in_args in iterator:
+            results.append(fn(*in_args))
+        shape_single_output = results[-1].shape
+        return (
+            torch.stack(results, dim=0)
+            .reshape(out_collection_shape + shape_single_output)
+            .permute(out_axes + tuple(i + len(out_axes) for i in range(len(shape_single_output))))
+        )
+
+    return wrapped
+
+
 __all__ = [
     "iter_flatten_dict",
     "restore_params_from_mlflow_run",
@@ -215,4 +262,5 @@ __all__ = [
     "load_checkpoint_from_mlflow_run",
     "restore_model_from_mlflow_run",
     "restore_data_from_mlflow_run",
+    "vmap_debug",
 ]
