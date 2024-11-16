@@ -69,6 +69,7 @@ def get_reps(
     dm: TorchvisionDataModuleBase,
     m: int,
     inputs: bool = False,
+    labels: bool = False,
     fabric: Optional[Fabric] = None,
     max_mem_gb: float = 8,
 ) -> dict[str, torch.Tensor]:
@@ -100,10 +101,13 @@ def get_reps(
     n = 0
     mem_usage = 0
     reps: defaultdict[str, list[torch.Tensor]] = defaultdict(list)
-    for x, _ in dl:
+    for x, la in dl:
         for k, v in model(x).items():
             mem_usage += _tensor_memory_gb(v)
             reps[k].append(v.cpu())
+
+        if labels:
+            reps["labels"].append(la)
 
         # TODO - could mem pressure be fixed by streaming outputs and calculating similarity on
         #  the fly? Or can we find some other way to address this?

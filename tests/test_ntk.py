@@ -1,7 +1,11 @@
+import unittest
+
 import torch
 from torch import nn
+from torch.fx import symbolic_trace
+
 from nn_lib.analysis.ntk import ntk_task, ntk_in_memory, ntk_vjp
-import unittest
+from nn_lib.models.graph_utils import update_all_inplace_ops
 
 
 class TestNTK(unittest.TestCase):
@@ -15,7 +19,9 @@ class TestNTK(unittest.TestCase):
     def setUpClass(cls):
         # Create a small model for testing
         cls.model = nn.Sequential(
-            nn.Linear(cls.I, cls.H), nn.ReLU(), nn.Linear(cls.H, cls.O)
+            nn.Linear(cls.I, cls.H),
+            nn.ReLU(),
+            nn.Linear(cls.H, cls.O),
         ).eval()
         cls.loss_fn = nn.CrossEntropyLoss()
         cls.x = torch.randn(cls.M, cls.I)
@@ -60,3 +66,23 @@ class TestNTK(unittest.TestCase):
                 grads_out = torch.stack(grads_out).squeeze()
                 ntk_einsum = torch.einsum("MNOP,MO,NP->MN", ntk_full, grads_out, grads_out)
                 self.assertTrue(torch.allclose(ntk1, ntk_einsum))
+
+
+class TestNTKWithInplaceOps(TestNTK):
+    @classmethod
+    def setUpClass(cls):
+        # Create a small model for testing. Like parent class but with inplace ops. *This is to
+        # test a specific bug where the first layer of the model is in-pace, which caused a bug in
+        # the NTK calculation.*
+        super().setUpClass()
+        cls.model = symbolic_trace(
+            nn.Sequential(
+                nn.ReLU(inplace=True),  # This one causes issues
+                nn.Linear(cls.I, cls.H),
+                nn.ReLU(inplace=True),  # This one is just included for good measure
+                nn.Linear(cls.H, cls.O),
+            )
+        ).eval()
+
+        # The bugfix:
+        cls.model = update_all_inplace_ops(cls.model, inplace=False)

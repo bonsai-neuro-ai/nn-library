@@ -16,6 +16,7 @@ __all__ = [
     "get_subgraph",
     "get_topology_for_subset_of_layers",
     "prefix_all_nodes",
+    "update_all_inplace_ops",
     "set_dict_outputs_by_name",
     "set_inputs_and_output_by_name",
     "step_through_call",
@@ -75,7 +76,7 @@ def _copy_module_new_graph(graph_module: GraphModule, name: Optional[str] = None
     return GraphModule(root=graph_module, graph=new_graph, class_name=class_name)
 
 
-def _set_inputs_by_name(graph: Graph, inputs: Iterable[str]) -> None:
+def _set_inputs_by_name(graph: Graph, inputs: Iterable[str], eliminate_dead: bool = True) -> None:
     """Set the inputs of a graph by finding nodes of the given name(s) and replacing them with
     placeholders."""
     # For each named input, erase any existing nodes of the same name and replace them with a
@@ -88,6 +89,13 @@ def _set_inputs_by_name(graph: Graph, inputs: Iterable[str]) -> None:
                 new_placeholder = graph.placeholder(node.name, node.type)
                 node.replace_all_uses_with(new_placeholder)
                 graph.erase_node(node)
+                # Handle potential name collision by reinforcing the new node name now that the old
+                # node is deleted.
+                if new_placeholder.name != node.name:
+                    new_placeholder.name = node.name
+
+    if eliminate_dead:
+        graph.eliminate_dead_code()
 
     # Remove all other preexisting inputs.
     for node in list(graph.nodes):
@@ -145,8 +153,8 @@ def set_inputs_and_output_by_name(graph: Graph, inputs: Iterable[str], output: s
     # defines what code is 'alive' or 'dead', and removing dead code is necessary before calling
     # _set_inputs_by_name, otherwise we will get an error trying to remove the existing inputs.
     _set_output_by_name(graph, output)
-    graph.eliminate_dead_code()
     _set_inputs_by_name(graph, inputs)
+    graph.eliminate_dead_code()
 
 
 def get_subgraph(graph_module: GraphModule, inputs: Iterable[str], output: str) -> GraphModule:
@@ -158,6 +166,7 @@ def get_subgraph(graph_module: GraphModule, inputs: Iterable[str], output: str) 
     new_module = _copy_module_new_graph(graph_module, name="Sub" + graph_module.__class__.__name__)
     set_inputs_and_output_by_name(new_module.graph, inputs, output)
     new_module.recompile()
+    new_module.delete_all_unused_submodules()
     return new_module
 
 
@@ -234,6 +243,25 @@ def stitch_graphs(
     new_module.recompile()
 
     return new_module
+
+
+def update_all_inplace_ops(graph_module: GraphModule, inplace=False) -> GraphModule:
+    """Update any inplace operations (e.g. ReLU(inplace=True)) in a model. Set their 'inplace'
+    attribute to the given value. Setting inplace=False helps for instance by making the functions
+    'pure' and thus play nicer with torch.fx and torch.func.
+
+    The module is itself modified in-place; a copy of the model reference is returned for
+    convenience.
+
+    Warning: this only works if the inplace ops are modules. That is, nn.ReLU will be updated, but
+    function calls like F.relu will not be updated!
+    """
+    for node in graph_module.graph.nodes:
+        if node.op == "call_module":
+            module = graph_module.get_submodule(node.target)
+            if hasattr(module, "inplace"):
+                module.inplace = inplace
+    return graph_module
 
 
 def squash_all_conv_batchnorm_pairs(graph_module: GraphModule) -> GraphModule:

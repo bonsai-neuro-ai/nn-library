@@ -4,12 +4,53 @@ from typing import Callable, Literal, Optional, assert_never
 import numpy as np
 import torch
 from torch import nn
-from torch.func import functional_call, vmap, vjp, jvp, jacrev, grad
+from torch.func import functional_call, vmap, vjp, jvp, jacrev, grad, functionalize
 from torch.fx import symbolic_trace
 
 
 GB_PER_ITEM = 4 / 1e9
 
+
+def _memory_partition_helper(
+    *axis_sizes: int | float,
+    max_items: int | float,
+    inner_multiplier: int | float,
+):
+    """Help partition memory into chunks to avoid OOM errors during nested vmap calls.
+
+    Say we have some code doing vmap(vmap(vmap(fn))) where 'fn' uses 'inner_multiplier' elements in
+    memory for each call. The total memory usage without chunking would then be the product of the
+    sizes of the three axes times 'inner_multiplier'. This function helps to partition the axes
+    into chunks such that the memory usage per iteration is less than 'max_items'.
+    """
+
+    axis_sizes = np.array(axis_sizes)
+    outer_loop_memory_ratio = max_items / inner_multiplier
+    if outer_loop_memory_ratio < 1:
+        # Break-early case one: inner loop memory usage is too high.
+        raise RuntimeError("No amount of chunking will work; inner loop memory usage is too high.")
+    elif outer_loop_memory_ratio > axis_sizes.prod():
+        # Break-early case two: no chunking needed; everything will fit in memory.
+        return [None] * len(axis_sizes)
+
+    # Try to partition the axes into chunks such that the total memory usage is less than max_items.
+    # Initial guess: evenly divide the memory across all axes.
+    pow = len(axis_sizes)
+    chunk_fractions = ((1 / outer_loop_memory_ratio) ** (1 / pow)) * np.ones_like(
+        axis_sizes, dtype=np.float32
+    )
+    chunk_sizes = (axis_sizes * chunk_fractions).astype(int)
+
+    # If any axis has a chunk size of 0, we need to adjust the chunk sizes. Find the biggest chunk,
+    # cut it in half, and distribute the extra memory to the other axes.
+    while (chunk_sizes == 0).any():
+        idx = np.argmax(chunk_sizes)
+        if chunk_sizes[idx] == 1:
+            raise RuntimeError("Something unexpected went wrong redistributing memory into chunks.")
+        chunk_fractions[idx] /= 2
+        chunk_sizes = (axis_sizes * chunk_fractions).astype(int)
+
+    return [(sz if sz < sz_max else None) for sz, sz_max in zip(chunk_sizes, axis_sizes)]
 
 
 def _create_functional_model_as_fn_of_params(model: nn.Module):
@@ -60,28 +101,31 @@ def ntk_in_memory(
     """
     model_fn, weights = _create_functional_model_as_fn_of_params(model)
 
-    num_params = sum(p.numel() for p in weights.values())
-    num_outputs = model_fn(weights, batch_x1[0]).numel()
-    numel_jacobian = num_params * num_outputs
-    memory_gb_per_item = numel_jacobian * GB_PER_ITEM
-    if memory_gb_per_item > mem_ceiling_gb:
-        raise RuntimeError(
-            "Jacobian calculation will use too much memory:"
-            f"{num_params} x {num_outputs} elements in the Jacobian, "
-            f"using {memory_gb_per_item:.2f} GB of memory per item in the batch! "
-            "Consider calling one of the ntk_vjp_* functions instead."
-        )
     m1 = len(batch_x1)
     m2 = len(batch_x2) if batch_x2 is not None else m1
-    memory_gb_total = m1 * m2 * num_outputs * num_outputs * GB_PER_ITEM
-    if memory_gb_total > mem_ceiling_gb:
+    num_params = sum(p.numel() for p in weights.values())
+    num_outputs = model_fn(weights, batch_x1[0]).numel()
+    numel_result = m1 * m2 * num_outputs * num_outputs
+    if numel_result * GB_PER_ITEM > mem_ceiling_gb:
         raise RuntimeError(
             "NTK calculation will use too much memory:"
             f"{m1} x {m2} x {num_outputs} x {num_outputs} elements in the NTK, "
-            f"using {memory_gb_total:.2f} GB of memory! "
+            f"using {numel_result * GB_PER_ITEM:.2f} GB of memory! "
             "Consider calling one of the ntk_vjp_* functions instead "
             "along with 'trace' or 'diagonal' reduction."
         )
+
+    chunk_size_1 = _memory_partition_helper(
+        m1, max_items=mem_ceiling_gb / GB_PER_ITEM / 2, inner_multiplier=num_outputs * num_params
+    )[0]
+    if chunk_size_1 is not None:
+        logging.warning(f"Batch 1 memory partitioning into chunks: {chunk_size_1}")
+
+    chunk_size_2 = _memory_partition_helper(
+        m2, max_items=mem_ceiling_gb / GB_PER_ITEM / 2, inner_multiplier=num_outputs * num_params
+    )[0]
+    if chunk_size_2 is not None:
+        logging.warning(f"Batch 2 memory partitioning into chunks: {chunk_size_2}")
 
     # jac_fn_single_x is a function which takes in a single input and returns the Jacobian of the
     # model's outputs (y) with respect to the model's weights (w) at that input.
@@ -89,12 +133,12 @@ def ntk_in_memory(
 
     # vmap over the batch dimension to get the Jacobian of the model's outputs with respect to
     # each input in the batch.
-    jac_per_x1 = vmap(jac_fn_single_x, (None, 0))(weights, batch_x1)
+    jac_per_x1 = vmap(jac_fn_single_x, (None, 0), chunk_size=chunk_size_1)(weights, batch_x1)
     jac_per_x1 = jac_per_x1.values()
     jac_per_x1 = [j.flatten(2) for j in jac_per_x1]
 
     if batch_x2 is not None:
-        jac_per_x2 = vmap(jac_fn_single_x, (None, 0))(weights, batch_x2)
+        jac_per_x2 = vmap(jac_fn_single_x, (None, 0), chunk_size=chunk_size_2)(weights, batch_x2)
         jac_per_x2 = jac_per_x2.values()
         jac_per_x2 = [j.flatten(2) for j in jac_per_x2]
     else:
@@ -122,11 +166,9 @@ def ntk_task(
     """
     model_fn, weights = _create_functional_loss_as_fn_of_params(model, loss_fn)
 
+    m1 = len(batch_x1)
+    m2 = len(batch_x2) if batch_x2 is not None else m1
     num_params = sum(p.numel() for p in weights.values())
-    mem_ceiling_items = mem_ceiling_gb / GB_PER_ITEM
-    auto_chunk_size = int(np.sqrt(mem_ceiling_items / num_params))
-    if auto_chunk_size < len(batch_x1):
-        logging.warning(f"Using chunk size of {auto_chunk_size} for NTK calculation.")
 
     # jac_fn_single_x is a function which takes in a single input and returns the Jacobian of the
     # loss's (L) with respect to the model's weights (w) at that input.
@@ -144,8 +186,13 @@ def ntk_task(
         batch_x2 = batch_x1
         batch_y2 = batch_y1
 
-    ntk_wrt_x2y2 = vmap(ntk_task_single_xy, (None, None, 0, 0), chunk_size=auto_chunk_size)
-    ntk_wrt_x1y1_x2y2 = vmap(ntk_wrt_x2y2, (0, 0, None, None), chunk_size=auto_chunk_size)
+    chunk_sizes = _memory_partition_helper(
+        m1, m2, max_items=mem_ceiling_gb / GB_PER_ITEM, inner_multiplier=2 * num_params
+    )
+    if any(cs is not None for cs in chunk_sizes):
+        logging.warning(f"Memory partitioning into chunks: {chunk_sizes}")
+    ntk_wrt_x2y2 = vmap(ntk_task_single_xy, (None, None, 0, 0), chunk_size=chunk_sizes[0])
+    ntk_wrt_x1y1_x2y2 = vmap(ntk_wrt_x2y2, (0, 0, None, None), chunk_size=chunk_sizes[1])
     return ntk_wrt_x1y1_x2y2(batch_x1, batch_y1, batch_x2, batch_y2)
 
 
@@ -209,21 +256,13 @@ def ntk_vjp_full(
             "ntk_task(...) instead."
         )
 
-    # Inner-loop chunking over the output dimensions
-    numel_inner_ops = 2 * n_params * n_output
-    if numel_inner_ops > mem_ceiling_items_partitioned:
-        # Apply chunking in the innermost loop over the output dimensions.
-        auto_chunk_inner = int(mem_ceiling_items_partitioned / (2 * n_params))
-        numel_inner_ops = 2 * n_params * auto_chunk_inner
-        logging.warning(f"Using inner chunk size of {auto_chunk_inner} for NTK-full calculation.")
-    else:
-        auto_chunk_inner = None
-
-    auto_chunk_outer = int((mem_ceiling_items / numel_inner_ops) ** (1 / 2))
-    if auto_chunk_outer < len(batch_x1):
-        logging.warning(f"Using chunk size of {auto_chunk_outer} for NTK calculation.")
-    else:
-        auto_chunk_outer = None
+    chunk_sizes = _memory_partition_helper(
+        n_output,
+        m1,
+        m2,
+        max_items=mem_ceiling_gb / GB_PER_ITEM,
+        inner_multiplier=n_params * (n_output + 1),
+    )
 
     basis = torch.eye(n_output, dtype=batch_x1.dtype, device=batch_x1.device).view(n_output, -1)
 
@@ -241,15 +280,15 @@ def ntk_vjp_full(
             _, jvps = jvp(lambda w: model_fn(w, x2), (weights,), j2_times_vec)
             return jvps
 
-        return vmap(get_ox1_ntk_slice, chunk_size=auto_chunk_inner)(basis)
+        return vmap(get_ox1_ntk_slice, chunk_size=chunk_sizes[0])(basis)
 
     # ``get_oxo_ntk(x1, x2)`` computes the OxO NTK for a single pair (x1, x2). Now we vmap over
     # the batches.
     if batch_x2 is None:
         batch_x2 = batch_x1
 
-    ntk_wrt_x2 = vmap(get_oxo_ntk, (None, 0), chunk_size=auto_chunk_outer)
-    ntk_wrt_x1x2 = vmap(ntk_wrt_x2, (0, None), chunk_size=auto_chunk_outer)
+    ntk_wrt_x2 = vmap(get_oxo_ntk, (None, 0), chunk_size=chunk_sizes[1])
+    ntk_wrt_x1x2 = vmap(ntk_wrt_x2, (0, None), chunk_size=chunk_sizes[2])
     result = ntk_wrt_x1x2(batch_x1, batch_x2)
 
     return result
@@ -265,7 +304,6 @@ def ntk_vjp_diagonal(
     model_fn, weights = _create_functional_model_as_fn_of_params(model)
 
     mem_ceiling_items = mem_ceiling_gb / GB_PER_ITEM
-    mem_ceiling_items_partitioned = mem_ceiling_items ** (1 / 3)
     n_output = model_fn(weights, batch_x1[0]).numel()
     n_params = sum(p.numel() for p in weights.values())
 
@@ -280,42 +318,37 @@ def ntk_vjp_diagonal(
             "Consider using ntk_vjp(..., mode='trace') or ntk_task(...) instead."
         )
 
-    numel_inner_ops = 2 * n_params * n_output
-    if numel_inner_ops > mem_ceiling_items_partitioned:
-        # Apply chunking in the innermost loop over the output dimensions.
-        auto_chunk_inner = int(mem_ceiling_items_partitioned / (2 * n_params))
-        numel_inner_ops = 2 * n_params * auto_chunk_inner
-        logging.warning(f"Using inner chunk size of {auto_chunk_inner} for NTK-trace calculation.")
-    else:
-        auto_chunk_inner = None
-
-    auto_chunk_outer = int((mem_ceiling_items / numel_inner_ops) ** (1 / 2))
-    if auto_chunk_outer < len(batch_x1):
-        logging.warning(f"Using chunk size of {auto_chunk_outer} for NTK calculation.")
-    else:
-        auto_chunk_outer = None
+    chunk_sizes = _memory_partition_helper(
+        n_output,
+        m1,
+        m2,
+        max_items=mem_ceiling_gb / GB_PER_ITEM,
+        inner_multiplier=n_params * 2,
+    )
+    if any(cs is not None for cs in chunk_sizes):
+        logging.warning(f"Memory partitioning into chunks: {chunk_sizes}")
 
     basis = torch.eye(n_output, dtype=batch_x1.dtype, device=batch_x1.device).view(n_output, -1)
 
     def get_diagonal_ntk(x1, x2):
         def get_ntk_vv(vec):
             # Isolate the input -> output[j] function and get grads wrt params for x1 and x2
-            jac_fn1 = grad(lambda w: torch.sum(model_fn(w, x1) * vec), argnums=0)
-            jac_fn2 = grad(lambda w: torch.sum(model_fn(w, x2) * vec), argnums=0)
+            grad_fn1 = grad(lambda w: torch.sum(model_fn(w, x1) * vec), argnums=0)
+            grad_fn2 = grad(lambda w: torch.sum(model_fn(w, x2) * vec), argnums=0)
 
             # Compute the (scalar) value for Gram(x1, x2)_{jj}
             return sum(
-                torch.sum(jac1 * jac2)
-                for jac1, jac2 in zip(jac_fn1(weights).values(), jac_fn2(weights).values())
+                torch.sum(grad1 * grad2)
+                for grad1, grad2 in zip(grad_fn1(weights).values(), grad_fn2(weights).values())
             )
 
-        return vmap(get_ntk_vv, chunk_size=auto_chunk_inner)(basis)
+        return vmap(get_ntk_vv, chunk_size=chunk_sizes[0])(basis)
 
     if batch_x2 is None:
         batch_x2 = batch_x1
 
-    ntk_wrt_x2 = vmap(get_diagonal_ntk, (None, 0), chunk_size=auto_chunk_outer)
-    ntk_wrt_x1x2 = vmap(ntk_wrt_x2, (0, None), chunk_size=auto_chunk_outer)
+    ntk_wrt_x2 = vmap(get_diagonal_ntk, (None, 0), chunk_size=chunk_sizes[1])
+    ntk_wrt_x1x2 = vmap(ntk_wrt_x2, (0, None), chunk_size=chunk_sizes[2])
     result = ntk_wrt_x1x2(batch_x1, batch_x2)
 
     return result
@@ -331,7 +364,6 @@ def ntk_vjp_trace(
     model_fn, weights = _create_functional_model_as_fn_of_params(model)
 
     mem_ceiling_items = mem_ceiling_gb / GB_PER_ITEM
-    mem_ceiling_items_partitioned = mem_ceiling_items ** (1 / 3)
     n_output = model_fn(weights, batch_x1[0]).numel()
     n_params = sum(p.numel() for p in weights.values())
 
@@ -346,20 +378,15 @@ def ntk_vjp_trace(
             "Consider using smaller batches."
         )
 
-    numel_inner_ops = 2 * n_params * n_output
-    if numel_inner_ops > mem_ceiling_items_partitioned:
-        # Apply chunking in the innermost loop over the output dimensions.
-        auto_chunk_inner = int(mem_ceiling_items_partitioned / (2 * n_params))
-        numel_inner_ops = 2 * n_params * auto_chunk_inner
-        logging.warning(f"Using inner chunk size of {auto_chunk_inner} for NTK-trace calculation.")
-    else:
-        auto_chunk_inner = None
-
-    auto_chunk_outer = int((mem_ceiling_items / numel_inner_ops) ** (1 / 2))
-    if auto_chunk_outer < len(batch_x1):
-        logging.warning(f"Using chunk size of {auto_chunk_outer} for NTK calculation.")
-    else:
-        auto_chunk_outer = None
+    chunk_sizes = _memory_partition_helper(
+        n_output,
+        m1,
+        m2,
+        max_items=mem_ceiling_gb / GB_PER_ITEM,
+        inner_multiplier=n_params * 2,
+    )
+    if any(cs is not None for cs in chunk_sizes):
+        logging.warning(f"Memory partitioning into chunks: {chunk_sizes}")
 
     basis = torch.eye(n_output, dtype=batch_x1.dtype, device=batch_x1.device).view(n_output, -1)
 
@@ -375,13 +402,13 @@ def ntk_vjp_trace(
                 for grad1, grad2 in zip(grad_fn1(weights).values(), grad_fn2(weights).values())
             )
 
-        return torch.sum(vmap(get_ntk_vv, chunk_size=auto_chunk_inner)(basis))
+        return torch.sum(vmap(get_ntk_vv, chunk_size=chunk_sizes[0])(basis))
 
     if batch_x2 is None:
         batch_x2 = batch_x1
 
-    ntk_wrt_x2 = vmap(get_trace_ntk, (None, 0), chunk_size=auto_chunk_outer)
-    ntk_wrt_x1x2 = vmap(ntk_wrt_x2, (0, None), chunk_size=auto_chunk_outer)
+    ntk_wrt_x2 = vmap(get_trace_ntk, (None, 0), chunk_size=chunk_sizes[1])
+    ntk_wrt_x1x2 = vmap(ntk_wrt_x2, (0, None), chunk_size=chunk_sizes[2])
     result = ntk_wrt_x1x2(batch_x1, batch_x2)
 
     return result
@@ -431,7 +458,7 @@ if __name__ == "__main__":
     print("Time taken (ntk_vjp_diagonal):", time.time() - start)
     print("NTK matrix shape:", g.shape)
 
-    # start = time.time()
-    # g = ntk_vjp_full(model.to(device), x.to(device))
-    # print("Time taken (ntk_vjp_full):", time.time() - start)
-    # print("NTK matrix shape:", g.shape)
+    start = time.time()
+    g = ntk_vjp_full(model.to(device), x.to(device))
+    print("Time taken (ntk_vjp_full):", time.time() - start)
+    print("NTK matrix shape:", g.shape)
