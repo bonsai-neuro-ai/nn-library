@@ -1,10 +1,11 @@
-import pydot
 import warnings
+from copy import deepcopy
+from typing import Iterable, Optional, Any, assert_never
+
+import pydot
 from torch import nn
 from torch.fx import GraphModule, Graph, Node, symbolic_trace
-from typing import Iterable, Optional, Any, assert_never
-from nn_lib.models.utils import squash_conv_batchnorm
-from copy import deepcopy
+
 
 __all__ = [
     "GraphModule",
@@ -276,7 +277,7 @@ def squash_all_conv_batchnorm_pairs(graph_module: GraphModule) -> GraphModule:
     """
     new_module = _copy_module_new_graph(
         graph_module, name="Squashed" + graph_module.__class__.__name__
-    )
+    ).eval()
 
     # Find all conv-batchnorm pairs
     # TODO: handle functional calls like F.conv2d; currently we assume all convs and batchnorms
@@ -307,7 +308,7 @@ def squash_all_conv_batchnorm_pairs(graph_module: GraphModule) -> GraphModule:
         conv_module, bn_module = new_module.get_submodule(conv.target), new_module.get_submodule(
             bn.target
         )
-        squashed_conv = squash_conv_batchnorm(conv_module, bn_module)
+        squashed_conv = nn.utils.fuse_conv_bn_eval(conv_module, bn_module)
         new_module.add_submodule(squashed_name, squashed_conv)
         with new_module.graph.inserting_before(conv):
             new_node = new_module.graph.call_module(

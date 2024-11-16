@@ -107,7 +107,7 @@ def get_reps(
             reps[k].append(v.cpu())
 
         if labels:
-            reps["labels"].append(la)
+            reps["labels"].append(la.cpu())
 
         # TODO - could mem pressure be fixed by streaming outputs and calculating similarity on
         #  the fly? Or can we find some other way to address this?
