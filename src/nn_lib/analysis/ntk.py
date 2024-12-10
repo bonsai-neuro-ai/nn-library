@@ -4,9 +4,8 @@ from typing import Callable, Literal, Optional, assert_never
 import numpy as np
 import torch
 from torch import nn
-from torch.func import functional_call, vmap, vjp, jvp, jacrev, grad, functionalize
+from torch.func import functional_call, vmap, vjp, jvp, jacrev, grad
 from torch.fx import symbolic_trace
-
 
 GB_PER_ITEM = 4 / 1e9
 
@@ -14,31 +13,32 @@ GB_PER_ITEM = 4 / 1e9
 def _memory_partition_helper(
     *axis_sizes: int | float,
     max_items: int | float,
-    inner_multiplier: int | float,
+    inner_items: int | float,
 ):
     """Help partition memory into chunks to avoid OOM errors during nested vmap calls.
 
-    Say we have some code doing vmap(vmap(vmap(fn))) where 'fn' uses 'inner_multiplier' elements in
+    Say we have some code doing vmap(vmap(vmap(fn))) where 'fn' uses 'inner_items' elements in
     memory for each call. The total memory usage without chunking would then be the product of the
-    sizes of the three axes times 'inner_multiplier'. This function helps to partition the axes
+    sizes of the three axes times 'inner_items'. This function helps to partition the axes
     into chunks such that the memory usage per iteration is less than 'max_items'.
     """
 
     axis_sizes = np.array(axis_sizes)
-    outer_loop_memory_ratio = max_items / inner_multiplier
-    if outer_loop_memory_ratio < 1:
+    max_parallel_loops = max_items / inner_items
+    if max_parallel_loops < 1:
         # Break-early case one: inner loop memory usage is too high.
         raise RuntimeError("No amount of chunking will work; inner loop memory usage is too high.")
-    elif outer_loop_memory_ratio > axis_sizes.prod():
+    elif max_parallel_loops > axis_sizes.prod():
         # Break-early case two: no chunking needed; everything will fit in memory.
         return [None] * len(axis_sizes)
 
     # Try to partition the axes into chunks such that the total memory usage is less than max_items.
     # Initial guess: evenly divide the memory across all axes.
     pow = len(axis_sizes)
-    chunk_fractions = ((1 / outer_loop_memory_ratio) ** (1 / pow)) * np.ones_like(
+    evenly_divided_chunk_sizes = (max_parallel_loops ** (1 / pow)) * np.ones_like(
         axis_sizes, dtype=np.float32
     )
+    chunk_fractions = evenly_divided_chunk_sizes / axis_sizes
     chunk_sizes = (axis_sizes * chunk_fractions).astype(int)
 
     # If any axis has a chunk size of 0, we need to adjust the chunk sizes. Find the biggest chunk,
@@ -116,13 +116,13 @@ def ntk_in_memory(
         )
 
     chunk_size_1 = _memory_partition_helper(
-        m1, max_items=mem_ceiling_gb / GB_PER_ITEM / 2, inner_multiplier=num_outputs * num_params
+        m1, max_items=mem_ceiling_gb / GB_PER_ITEM / 2, inner_items=num_outputs * num_params
     )[0]
     if chunk_size_1 is not None:
         logging.warning(f"Batch 1 memory partitioning into chunks: {chunk_size_1}")
 
     chunk_size_2 = _memory_partition_helper(
-        m2, max_items=mem_ceiling_gb / GB_PER_ITEM / 2, inner_multiplier=num_outputs * num_params
+        m2, max_items=mem_ceiling_gb / GB_PER_ITEM / 2, inner_items=num_outputs * num_params
     )[0]
     if chunk_size_2 is not None:
         logging.warning(f"Batch 2 memory partitioning into chunks: {chunk_size_2}")
@@ -187,7 +187,7 @@ def ntk_task(
         batch_y2 = batch_y1
 
     chunk_sizes = _memory_partition_helper(
-        m1, m2, max_items=mem_ceiling_gb / GB_PER_ITEM, inner_multiplier=2 * num_params
+        m1, m2, max_items=mem_ceiling_gb / GB_PER_ITEM, inner_items=2 * num_params
     )
     if any(cs is not None for cs in chunk_sizes):
         logging.warning(f"Memory partitioning into chunks: {chunk_sizes}")
@@ -261,7 +261,7 @@ def ntk_vjp_full(
         m1,
         m2,
         max_items=mem_ceiling_gb / GB_PER_ITEM,
-        inner_multiplier=n_params * (n_output + 1),
+        inner_items=n_params * (n_output + 1),
     )
 
     basis = torch.eye(n_output, dtype=batch_x1.dtype, device=batch_x1.device).view(n_output, -1)
@@ -323,7 +323,7 @@ def ntk_vjp_diagonal(
         m1,
         m2,
         max_items=mem_ceiling_gb / GB_PER_ITEM,
-        inner_multiplier=n_params * 2,
+        inner_items=n_params * 2,
     )
     if any(cs is not None for cs in chunk_sizes):
         logging.warning(f"Memory partitioning into chunks: {chunk_sizes}")
@@ -383,7 +383,7 @@ def ntk_vjp_trace(
         m1,
         m2,
         max_items=mem_ceiling_gb / GB_PER_ITEM,
-        inner_multiplier=n_params * 2,
+        inner_items=n_params * 2,
     )
     if any(cs is not None for cs in chunk_sizes):
         logging.warning(f"Memory partitioning into chunks: {chunk_sizes}")
