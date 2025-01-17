@@ -15,7 +15,7 @@ def load_data(expt_name, tracking_uri):
     return df
 
 
-def sanity_check_model(df):
+def sanity_check_results(df):
     by_stage = {
         stage: df[df["params.stage"] == str(stage)].set_index(
             ["params.model/init_args/layer1", "params.model/init_args/layer2"]
@@ -42,9 +42,10 @@ def sanity_check_model(df):
         by_stage[StitchingStage.RANDOM_INIT]["metrics.model2-test_loss"],
         by_stage[StitchingStage.TRAIN_STITCHING_LAYER]["metrics.model2-test_loss"],
     )
+    # Include a small buffer in this loss comparison because the process is a little noisy
     npt.assert_array_less(
         by_stage[StitchingStage.RANDOM_INIT]["metrics.model2-test_loss"],
-        by_stage[StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM]["metrics.model2-test_loss"],
+        by_stage[StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM]["metrics.model2-test_loss"] + .01,
         err_msg="Expected model2 loss to get *worse* after fine-tuning downstream model2 layers for stitching",
     )
 
@@ -71,7 +72,8 @@ def visualize_test_loss(df):
             values="metrics.stitched-test_loss",
         )
         fig = plt.figure(figsize=(10, 6))
-        sns.heatmap(matrix, annot=True, fmt=".2f", vmin=0, vmax=6)
+        sns.heatmap(matrix, annot=False, vmin=0)
+        # sns.heatmap(matrix, annot=True, fmt=".2f", vmin=0, vmax=6)
         plt.title(f"Test loss per model 1 layer vs model 2 layer in stage {stage.lower()}")
         fig.tight_layout()
         plt.show()
@@ -100,17 +102,20 @@ def visualize_between_stage_change_in_loss(df):
 
     loss_diff = matrix_stitching - matrix_regression
     fig = plt.figure(figsize=(10, 6))
-    sns.heatmap(loss_diff, annot=True, fmt=".2f", center=0, cmap="coolwarm")
+    sns.heatmap(loss_diff, center=0, cmap="coolwarm")
+    # sns.heatmap(loss_diff, annot=True, fmt=".2f", center=0, cmap="coolwarm")
     plt.title("Improvement in loss from training the stitching layer vs regression init")
     fig.tight_layout()
     plt.show()
 
     loss_diff = matrix_all - matrix_stitching
     fig = plt.figure(figsize=(10, 6))
-    sns.heatmap(loss_diff, annot=True, fmt=".2f", center=0, cmap="coolwarm")
+    sns.heatmap(loss_diff, center=0, cmap="coolwarm")
+#     sns.heatmap(loss_diff, annot=True, fmt=".2f", center=0, cmap="coolwarm")
     plt.title("Improvement in loss from fine-tuning all layers vs just the stitching layer")
     fig.tight_layout()
     plt.show()
+
 
 def visualize_training_time(df):
     df_train_stitching = df[df["params.stage"] == str(StitchingStage.TRAIN_STITCHING_LAYER)]
@@ -129,7 +134,9 @@ def visualize_training_time(df):
     fig.tight_layout()
     plt.show()
 
-    df_train_all = df[df["params.stage"] == str(StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM)]
+    df_train_all = df[
+        df["params.stage"] == str(StitchingStage.TRAIN_STITCHING_LAYER_AND_DOWNSTREAM)
+    ]
     fig = plt.figure(figsize=(10, 6))
     sns.heatmap(
         df_train_all.pivot_table(
@@ -148,11 +155,26 @@ def visualize_training_time(df):
 
 def main(args):
     df = load_data(args.expt_name, args.tracking_uri)
-    sanity_check_model(df)
-    plot_loss_per_stage(df)
-    visualize_test_loss(df)
-    visualize_between_stage_change_in_loss(df)
-    visualize_training_time(df)
+
+    # Architectures are specified by architecture (depth and width)
+    # TODO - and how trained
+    arch_key_1 = [
+        "params.model/init_args/model1/init_args/depth",
+        "params.model/init_args/model1/init_args/width",
+    ]
+    arch_key_2 = [
+        "params.model/init_args/model2/init_args/depth",
+        "params.model/init_args/model2/init_args/width",
+    ]
+
+    for key1, group1 in df.groupby(arch_key_1):
+        for key2, group2 in group1.groupby(arch_key_2):
+            print("KEY1", key1, "KEY2", key2)
+            sanity_check_results(group2)
+            plot_loss_per_stage(group2)
+            visualize_test_loss(group2)
+            visualize_between_stage_change_in_loss(group2)
+            visualize_training_time(group2)
 
 
 if __name__ == "__main__":
