@@ -1,8 +1,8 @@
 import torch
-from nn_lib.datasets import ImageNetDataModule
-from nn_lib.models import get_pretrained_model
-from nn_lib.datasets import get_tv_default_transforms
 from torch.fx import symbolic_trace
+
+from nn_lib.datasets import ImageNetDataModule, get_tv_default_transforms
+from nn_lib.models import get_pretrained_model
 from nn_lib.models.graph_utils import (
     to_dot,
     squash_all_conv_batchnorm_pairs,

@@ -1,9 +1,0 @@
-model:
-  class_path: nn_lib.models.ResNet
-  init_args:
-    depth: 20
-    width: 16
-    num_classes: 10
-classifier:
-  label_smoothing: 0.01
-  lr: 0.001

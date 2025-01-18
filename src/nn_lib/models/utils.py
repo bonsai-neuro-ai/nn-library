@@ -1,7 +1,6 @@
-import torch
-from torch import nn
 from contextlib import contextmanager
 
+from torch import nn
 
 __all__ = [
     "frozen",

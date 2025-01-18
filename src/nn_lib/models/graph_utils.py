@@ -6,7 +6,6 @@ import pydot
 from torch import nn
 from torch.fx import GraphModule, Graph, Node, symbolic_trace
 
-
 __all__ = [
     "GraphModule",
     "Graph",

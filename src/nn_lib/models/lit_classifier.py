@@ -1,12 +1,12 @@
-from torch import nn
+from typing import Union, Sequence, Any, TypeVar, Generic, Literal
+
 import lightning as lit
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 from lightning.pytorch.tuner import Tuner
+from torch import nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchmetrics import Accuracy
-from typing import Union, Sequence, Any, TypeVar, Generic, Literal
-
 
 T = TypeVar("T")
 

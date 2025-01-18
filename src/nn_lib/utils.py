@@ -1,15 +1,16 @@
-import jsonargparse
-import torch
-import pandas as pd
-import mlflow
 import importlib
+import itertools
+import tempfile
 from pathlib import Path
 from typing import Optional, Callable, Generator, Tuple, Any, TypeVar, Iterable, Union, assert_never
-from torch import nn
-from mlflow.entities import Run
-import itertools
-from tqdm.auto import tqdm
 
+import jsonargparse
+import mlflow
+import pandas as pd
+import torch
+from mlflow.entities import Run
+from torch import nn
+from tqdm.auto import tqdm
 
 T = TypeVar("T")
 K = TypeVar("K")
@@ -158,6 +159,16 @@ def restore_data_from_mlflow_run(run: pd.Series):
     return instantiate(model_class, init_args)
 
 
+def save_as_artifact(obj: object, path: Path, run_id: str):
+    """Save the given object to the given path as an MLflow artifact in the given run."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_file = Path(tmpdir) / path.name
+        remote_path = str(path.parent) if path.parent != Path() else None
+        torch.save(obj, local_file)
+        mlflow.log_artifact(str(local_file), artifact_path=remote_path, run_id=run_id)
+
+
+
 # Helpers/utilities below this line
 
 
@@ -254,13 +265,14 @@ def vmap_debug(fn, in_axes=None, out_axes=None, progbar: bool = False) -> Callab
 
 
 __all__ = [
+    "instantiate",
     "iter_flatten_dict",
+    "load_checkpoint_from_mlflow_run",
+    "restore_data_from_mlflow_run",
+    "restore_model_from_mlflow_run",
     "restore_params_from_mlflow_run",
+    "save_as_artifact",
     "search_runs_by_params",
     "search_single_run_by_params",
-    "instantiate",
-    "load_checkpoint_from_mlflow_run",
-    "restore_model_from_mlflow_run",
-    "restore_data_from_mlflow_run",
     "vmap_debug",
 ]
