@@ -1,5 +1,33 @@
 [project]
+name = "bonsai-nn-library"
+description = "Common tools for working with neural networks"
 requires-python = ">= 3.10"
+version = "0.2.0"
+dependencies = [
+    "jsonargparse",
+    "lightning[pytorch-extra]",
+    "matplotlib",
+    "mlflow",
+    "numpy",
+    "pandas",
+    "parse",
+    "pycocotools",
+    "pydot",
+    "pyyaml",
+    "scipy",
+    "scikit-learn",
+    "seaborn",
+    "tabulate",
+    "torch",
+    "torchmetrics",
+    "torchvision",
+    "tqdm",
+]
+
+
+[build-backend]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
 
 
 [tool.black]
