@@ -1,5 +1,5 @@
 import warnings
-from typing import Iterable, List, Optional, Any, assert_never
+from typing import Iterable, List, Optional, Any, assert_never, Self
 
 import pydot
 from torch import nn
@@ -211,7 +211,7 @@ class GraphModulePlus(GraphModule):
         # order as the input.
         return list(lookup_node_by_name.values())
 
-    def _rm_inputs(self, exceptions: Optional[Iterable[Node]] = None) -> None:
+    def _rm_inputs(self, exceptions: Optional[Iterable[Node]] = None) -> Self:
         # Cast to a list so that we're not modifying the graph while iterating over it.
         if exceptions is None:
             exceptions = []
@@ -224,17 +224,19 @@ class GraphModulePlus(GraphModule):
                         f"Could not remove input node {node.name}. Either this node is still "
                         f"genuinely in use, or you should call eliminate_dead_code() first."
                     )
+        return self
 
     @property
     def inputs(self) -> List[Node]:
         """Get all input nodes in the graph."""
         return [node for node in self.graph.nodes if node.op == "placeholder"]
 
-    def _rm_output(self) -> None:
+    def _rm_output(self) -> Self:
         # Cast to a list so that we're not modifying the graph while iterating over it.
         for node in list(self.graph.nodes):
             if node.op == "output":
                 self.graph.erase_node(node)
+        return self
 
     @property
     def output(self) -> Node:
@@ -248,7 +250,7 @@ class GraphModulePlus(GraphModule):
         """Get the Node which is returned by the graph."""
         return self.output.args[0]
 
-    def _update_all_inplace_ops(self, inplace: bool = False) -> None:
+    def _update_all_inplace_ops(self, inplace: bool = False) -> Self:
         """Update any inplace operations (e.g. ReLU(inplace=True)) in a model. Set their
         'inplace' attribute to the given value. Setting inplace=False helps for instance by
         making the functions 'pure' and thus play nicer with torch.fx and torch.func.
@@ -263,12 +265,13 @@ class GraphModulePlus(GraphModule):
                 module = self.get_submodule(node.target)
                 if hasattr(module, "inplace"):
                     module.inplace = inplace
+        return self
 
     ########################
     ## Graph manipulation ##
     ########################
 
-    def set_inputs(self, inputs: list[str | Node], eliminate_dead: bool = True) -> None:
+    def set_inputs(self, inputs: list[str | Node], eliminate_dead: bool = True) -> Self:
         """Set the inputs of this graph by finding nodes of the given name(s) and replacing them
         with placeholders. Modifies the graph attribute in-place."""
         # For each named input, erase any existing nodes of the same name and replace them with a
@@ -296,7 +299,9 @@ class GraphModulePlus(GraphModule):
         # was not set to True, since the graph will refuse to remove nodes that are still used.
         self._rm_inputs(exceptions=dont_remove)
 
-    def set_output(self, output: str | Node, eliminate_dead: bool = True) -> None:
+        return self
+
+    def set_output(self, output: str | Node, eliminate_dead: bool = True) -> Self:
         """Remove all preexisting outputs and set the output of a graph to the node of the given
         name."""
         # Find the named node to be the arg to a new output node
@@ -311,7 +316,9 @@ class GraphModulePlus(GraphModule):
         if eliminate_dead:
             self.graph.eliminate_dead_code()
 
-    def set_dict_outputs(self, outputs: Iterable[str | Node], eliminate_dead: bool = True) -> None:
+        return self
+
+    def set_dict_outputs(self, outputs: Iterable[str | Node], eliminate_dead: bool = True) -> Self:
         """Modify the Graph by adding a new node which collects multiple outputs in a dict. This
         new node will then become the output of the graph.
         """
@@ -337,13 +344,17 @@ class GraphModulePlus(GraphModule):
         # Modifying the graph without reassigning it requires a call to recompile
         self.recompile()
 
-    def set_inputs_and_output(self, inputs: list[str | Node], output: str | Node) -> None:
+        return self
+
+    def set_inputs_and_output(self, inputs: list[str | Node], output: str | Node) -> Self:
         """Set both the inputs and output of this graph. Modifies the graph attribute in-place."""
         # Important that we set output first and then eliminate dead code while setting inputs.
         if output in inputs:
             raise ValueError("Output node cannot also be an input node.")
         self.set_output(output, eliminate_dead=False)
         self.set_inputs(inputs, eliminate_dead=True)
+
+        return self
 
     ############################################
     ## Debugging and visualization utilities ##
