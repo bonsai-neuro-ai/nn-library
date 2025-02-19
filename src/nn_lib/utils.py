@@ -1,6 +1,7 @@
 import importlib
 import itertools
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Optional, Callable, Generator, Tuple, Any, TypeVar, Iterable, Union, assert_never
 
@@ -11,6 +12,23 @@ import torch
 from mlflow.entities import Run
 from torch import nn
 from tqdm.auto import tqdm
+from functools import wraps
+
+try:
+    from warnings import deprecated
+except ImportError:
+
+    def deprecated(reason):
+        def decorator(func):
+            @wraps(func)
+            def wrapped(*args, **kwargs):
+                warnings.warn(reason, DeprecationWarning, stacklevel=2)
+                return func(*args, **kwargs)
+
+            return wrapped
+
+        return decorator
+
 
 T = TypeVar("T")
 K = TypeVar("K")
@@ -168,7 +186,6 @@ def save_as_artifact(obj: object, path: Path, run_id: str):
         mlflow.log_artifact(str(local_file), artifact_path=remote_path, run_id=run_id)
 
 
-
 # Helpers/utilities below this line
 
 
@@ -265,6 +282,7 @@ def vmap_debug(fn, in_axes=None, out_axes=None, progbar: bool = False) -> Callab
 
 
 __all__ = [
+    "deprecated",
     "instantiate",
     "iter_flatten_dict",
     "load_checkpoint_from_mlflow_run",
