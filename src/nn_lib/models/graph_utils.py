@@ -1,10 +1,12 @@
 import warnings
 from copy import deepcopy
 from typing import Iterable, Optional, Any, assert_never
+from nn_lib.utils import deprecated
 
 import pydot
 from torch import nn
 from torch.fx import GraphModule, Graph, Node, symbolic_trace
+
 
 __all__ = [
     "GraphModule",
@@ -31,6 +33,7 @@ __all__ = [
 #  dependent loop). See https://github.com/pytorch/TensorRT/issues/1871#issuecomment-1543226473
 
 
+@deprecated("Use GraphModulePlus class instead")
 def get_nodes_by_name(graph: Graph, names: str | Iterable[str]) -> list[Node]:
     """Get nodes from a graph by name. The name argument may be a string or an iterable of strings.
 
@@ -53,16 +56,19 @@ def get_nodes_by_name(graph: Graph, names: str | Iterable[str]) -> list[Node]:
     return list(lookup_node_by_name.values())
 
 
+@deprecated("Use GraphModulePlus class instead")
 def get_inputs(graph: Graph) -> list[Node]:
     """Get the input nodes of a graph."""
     return [node for node in graph.nodes if node.op == "placeholder"]
 
 
+@deprecated("Use GraphModulePlus class instead")
 def get_output(graph: Graph) -> Node:
     """Get the output node of a graph."""
     return next(node for node in graph.nodes if node.op == "output")
 
 
+@deprecated("Use GraphModulePlus class instead")
 def _copy_module_new_graph(graph_module: GraphModule, name: Optional[str] = None) -> GraphModule:
     """Get a new GraphModule which shares attribute/submodule references with the original, but has
     a separate graph object. This is useful for making modifications to the graph without affecting
@@ -76,6 +82,7 @@ def _copy_module_new_graph(graph_module: GraphModule, name: Optional[str] = None
     return GraphModule(root=graph_module, graph=new_graph, class_name=class_name)
 
 
+@deprecated("Use GraphModulePlus class instead")
 def _set_inputs_by_name(graph: Graph, inputs: Iterable[str], eliminate_dead: bool = True) -> None:
     """Set the inputs of a graph by finding nodes of the given name(s) and replacing them with
     placeholders."""
@@ -109,6 +116,7 @@ def _set_inputs_by_name(graph: Graph, inputs: Iterable[str], eliminate_dead: boo
                 )
 
 
+@deprecated("Use GraphModulePlus class instead")
 def _set_output_by_name(graph: Graph, output: str) -> None:
     """Remove all preexisting outputs and set the output of a graph to the node of the given name."""
     # Find the named node to be the arg to a new output node
@@ -123,6 +131,7 @@ def _set_output_by_name(graph: Graph, output: str) -> None:
         graph.output(node_to_output)
 
 
+@deprecated("Use GraphModulePlus class instead")
 def set_dict_outputs_by_name(graph: Graph, outputs: Iterable[str]) -> None:
     """Modify the given Graph by adding a new node which collects multiple outputs in a dict. This
     new node will then become the output of the graph.
@@ -146,6 +155,7 @@ def set_dict_outputs_by_name(graph: Graph, outputs: Iterable[str]) -> None:
     graph.eliminate_dead_code()
 
 
+@deprecated("Use GraphModulePlus class instead")
 def set_inputs_and_output_by_name(graph: Graph, inputs: Iterable[str], output: str) -> None:
     """Set the inputs and output of a graph to the nodes of the given name(s)."""
     _assert_no_common_names(inputs, [output])
@@ -157,6 +167,7 @@ def set_inputs_and_output_by_name(graph: Graph, inputs: Iterable[str], output: s
     graph.eliminate_dead_code()
 
 
+@deprecated("Use GraphModulePlus class instead")
 def get_subgraph(graph_module: GraphModule, inputs: Iterable[str], output: str) -> GraphModule:
     """Extract a subgraph from a GraphModule by specifying the input and output nodes by name. The
     returned GraphModule shares attributes/submodules/parameters with the original, but the graph
@@ -200,6 +211,7 @@ def prefix_all_nodes(graph: Graph, prefix: str) -> Graph:
     return graph
 
 
+@deprecated("Use GraphModulePlus.replace_head instead")
 def stitch_graphs(
     named_modules: dict[str, nn.Module],
     rewire_layers_from_to: dict[str, str],
@@ -245,6 +257,7 @@ def stitch_graphs(
     return new_module
 
 
+@deprecated("Use GraphModulePlus class instead")
 def update_all_inplace_ops(graph_module: GraphModule, inplace=False) -> GraphModule:
     """Update any inplace operations (e.g. ReLU(inplace=True)) in a model. Set their 'inplace'
     attribute to the given value. Setting inplace=False helps for instance by making the functions
@@ -264,6 +277,7 @@ def update_all_inplace_ops(graph_module: GraphModule, inplace=False) -> GraphMod
     return graph_module
 
 
+@deprecated("Use GraphModulePlus class instead")
 def squash_all_conv_batchnorm_pairs(graph_module: GraphModule) -> GraphModule:
     """Squash all conv-batchnorm pairs in a model. Returns a new model with parameters/attributes
     shared with the original model *except* for the new conv layers.
@@ -324,6 +338,7 @@ def squash_all_conv_batchnorm_pairs(graph_module: GraphModule) -> GraphModule:
     return new_module
 
 
+@deprecated("Use GraphModulePlus class instead")
 def to_dot(graph: Graph) -> pydot.Dot:
     dot = pydot.Dot()
     for node in graph.nodes:
@@ -333,6 +348,7 @@ def to_dot(graph: Graph) -> pydot.Dot:
     return dot
 
 
+@deprecated("Use GraphModulePlus class instead")
 def step_through_call(graph_module: GraphModule, context={}, callback=None) -> Any:
     """Step through a call to a GraphModule, printing the name of each node and the shape of each
     tensor as it passes through the node."""

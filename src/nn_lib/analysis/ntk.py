@@ -5,7 +5,6 @@ import numpy as np
 import torch
 from torch import nn
 from torch.func import functional_call, vmap, vjp, jvp, jacrev, grad
-from torch.fx import symbolic_trace
 
 GB_PER_ITEM = 4 / 1e9
 
@@ -418,6 +417,7 @@ if __name__ == "__main__":
     import time
     from nn_lib.models import get_pretrained_model
     from nn_lib.datasets import ImageNetDataModule, get_tv_default_transforms
+    from torch.fx import symbolic_trace
 
     model = symbolic_trace(get_pretrained_model("resnet18")).eval()
     data = ImageNetDataModule(root_dir="/data/datasets/", batch_size=7)
