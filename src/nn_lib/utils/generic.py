@@ -26,6 +26,64 @@ except ImportError:
 T = TypeVar("T")
 K = TypeVar("K")
 J = TypeVar("J")
+# It's understood but not enforced that ChildType is a subclass of ParentType
+ParentType = TypeVar("ParentType")
+ChildType = TypeVar("ChildType")
+
+
+def supersedes(parent_class: ParentType) -> Callable[[ChildType], ChildType]:
+    """Decorator to place on some subclass to mark it as the new version of the parent class.
+    All instances of the parent class, globally, will be replaced with instances of the new class,
+    thanks to our ability to mess with the __new__ method of the parent class.
+
+    Example:
+
+        class Foo(object):
+            def __init__(self, x):
+                self.x = x
+            def foo(self):
+                print("foo", self.x)
+
+        def foo_factory(x):
+            return Foo(x)
+
+        @supersedes(Foo)
+        class BetterFoo(Foo):
+            def __init__(self, x):
+                super().__init__(x + 1)  # BetterFoo is better because x+1 is better than x
+
+            # BetterFoo also defines some new methods
+            def bar(self):
+                print("bar", self.x)
+
+        f = foo_factory(10)
+        f.foo()  # prints 11
+        f.bar()  # type checker is unhappy, but this works!
+        print(type(f))  # prints BetterFoo
+
+        f = BetterFoo(10)
+        f.foo()  # prints 11
+        f.bar()  # prints bar 11, and the type checker is happy
+    """
+
+    def decorator(child_class: ChildType) -> ChildType:
+        assert issubclass(child_class, parent_class)  # type: ignore
+        og_new = parent_class.__new__
+
+        def new_new(cls, *args, **kwargs):
+            if cls is parent_class:
+                cls = child_class
+            # Sometimes __new__ takes additional args, sometimes not. We'll just try with args first
+            # and fall back on the no-args case if that fails.
+            try:
+                return og_new(cls, *args, **kwargs)
+            except TypeError:
+                return og_new(cls)
+
+        parent_class.__new__ = classmethod(new_new)
+        return child_class
+
+    return decorator
 
 
 def iter_flatten_dict(

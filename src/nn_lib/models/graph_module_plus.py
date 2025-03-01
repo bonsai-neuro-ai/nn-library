@@ -6,10 +6,19 @@ from torch import nn
 from torch.fx import symbolic_trace, GraphModule, Graph, Node
 
 from nn_lib.models.graph_utils import prefix_all_nodes
+from nn_lib.utils import supersedes
 
 
+@supersedes(GraphModule)
 class GraphModulePlus(GraphModule):
-    """An extension of torch.fx.GraphModule that provides additional functionality."""
+    """An extension of torch.fx.GraphModule that provides additional functionality.
+
+    WARNING: We globally inject this class into existing torch.fx code by replacing the
+    GraphModule.__new__ class method with the @supersedes decorator. This is a hacky way to
+    extend the functionality of torch.fx globally, such that existing methods in torch.fx which
+    used to return a GraphModule should now return a GraphModulePlus. We should be extra careful
+    when overriding fx.GraphModule methods in this class.
+    """
 
     ###############
     ## Factories ##
