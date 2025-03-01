@@ -2,6 +2,7 @@ import unittest
 from warnings import catch_warnings
 
 import torch
+from torch.fx import symbolic_trace
 from torchvision.models.resnet import resnet18, resnet34
 from nn_lib.models.graph_module_plus import GraphModulePlus
 from nn_lib.models.utils import frozen
@@ -15,6 +16,15 @@ class TestGraphModulePlus(unittest.TestCase):
         self.gm = GraphModulePlus.new_from_trace(self.reference_module)
         self.dummy_input = torch.randn(1, 3, 224, 224)
 
+    def _get_dummy_rep(self, node_name):
+        return GraphModulePlus.new_from_copy(self.gm).set_output(node_name)(self.dummy_input)
+
+    def test_superseded(self):
+        # Thanks to the @supersedes decorator, even built-in fx code that would normally return a
+        # fx.GraphModule should return a GraphModulePlus instead
+        gm = symbolic_trace(self.reference_module)
+        self.assertIsInstance(gm, GraphModulePlus)
+
     def test_inputs(self):
         inputs = self.gm.inputs
         self.assertEqual(len(inputs), 1)
@@ -24,24 +34,22 @@ class TestGraphModulePlus(unittest.TestCase):
         self.assertEqual(self.gm.output.name, "output")
         self.assertEqual(self.gm.output_value.name, "fc")
 
-    def test_set_inputs_no_eliminate_dead(self):
-        # Without eliminate_dead, the method should raise a UserWarning when it tries to get rid
-        # of the previous input "x"
-        with catch_warnings(record=True) as w:
-            self.gm.set_inputs(["maxpool"], eliminate_dead=False)
-        self.assertEqual(len(w), 1)
-        self.assertIn("Could not remove input node x.", str(w[0].message))
-
-    def test_set_inputs_eliminate_dead(self):
+    def test_set_inputs(self):
         # With eliminate_dead, the method should just work without warnings
+        og_rep = self._get_dummy_rep("maxpool")
+        og_output = self.gm(self.dummy_input)
         with catch_warnings(record=True) as w:
-            self.gm.set_inputs(["maxpool"], eliminate_dead=True)
+            self.gm.set_inputs(["maxpool"])
+        print("Warnings:", *w, sep="\n")
         self.assertEqual(len(w), 0)
         inputs = self.gm.inputs
         self.assertEqual(len(inputs), 1)
         self.assertEqual(inputs[0].name, "maxpool")
+        new_output = self.gm(og_rep)
+        torch.testing.assert_allclose(og_output, new_output)
 
     def test_set_output(self):
+        og_result = self._get_dummy_rep("layer1_1_relu")
         num_nodes_before = len(list(self.gm.graph.nodes))
         the_node = self.gm._resolve_nodes("layer1_1_relu")[0]
         self.gm.set_output("layer1_1_relu")
@@ -49,6 +57,9 @@ class TestGraphModulePlus(unittest.TestCase):
 
         num_nodes_after = len(list(self.gm.graph.nodes))
         self.assertLess(num_nodes_after, num_nodes_before)
+
+        new_result = self.gm(self.dummy_input)
+        torch.testing.assert_allclose(og_result, new_result)
 
     def test_set_dict_outputs(self):
         self.gm.set_dict_outputs(outputs=["add_1", "add_2", "add_3"])
