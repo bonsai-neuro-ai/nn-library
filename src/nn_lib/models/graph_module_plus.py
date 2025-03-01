@@ -177,9 +177,7 @@ class GraphModulePlus(GraphModule):
         # Post-surgery, clean up the graph. This will remove all unused nodes, so any conv/bn
         # nodes that we squashed end up removed but only if they are no longer used in any other
         # part of the graph.
-        new_module.graph.eliminate_dead_code()
-        new_module.recompile()
-        new_module.delete_all_unused_submodules()
+        new_module._clean_up_and_recompile()
 
         return new_module
 
@@ -210,21 +208,6 @@ class GraphModulePlus(GraphModule):
         # This relies on the fact that python dicts are ordered, so the output will be in the same
         # order as the input.
         return list(lookup_node_by_name.values())
-
-    def _rm_inputs(self, exceptions: Optional[Iterable[Node]] = None) -> Self:
-        # Cast to a list so that we're not modifying the graph while iterating over it.
-        if exceptions is None:
-            exceptions = []
-        for node in list(self.graph.nodes):
-            if node.op == "placeholder" and node not in exceptions:
-                try:
-                    self.graph.erase_node(node)
-                except RuntimeError:
-                    warnings.warn(
-                        f"Could not remove input node {node.name}. Either this node is still "
-                        f"genuinely in use, or you should call eliminate_dead_code() first."
-                    )
-        return self
 
     @property
     def inputs(self) -> List[Node]:
@@ -271,7 +254,37 @@ class GraphModulePlus(GraphModule):
     ## Graph manipulation ##
     ########################
 
-    def set_inputs(self, inputs: list[str | Node], eliminate_dead: bool = True) -> Self:
+    def eliminate_dead(self, remove_unused_inputs: bool = True) -> Self:
+        """Call self.graph.eliminate_dead_code() AND remove any lingering unused placeholder nodes,
+        unless remove_unused_inputs=False.
+        """
+        # elminiate_dead_code() works backwards from outputs to inputs (it assumes the graph is
+        # topologically sorted), removing any node that doesn't have users.
+        self.graph.eliminate_dead_code()
+
+        # For reasons unknown, eliminate_dead_code() doesn't remove unused placeholders. We'll do
+        # that manually here.
+        if remove_unused_inputs:
+            # Cast to a list so that we're not modifying the graph while iterating over it.
+            for node in list(self.graph.nodes):
+                if node.op == "placeholder" and len(node.users) == 0:
+                    self.graph.erase_node(node)
+
+        return self
+
+    def _clean_up_and_recompile(self):
+        # The purpose of 'eliminate_dead' is to remove Nodes from the Graph that have no path to
+        # any output node.
+        self.eliminate_dead()
+        # The purpose of 'recompile' is to take the modified Graph recompile it into a
+        # self.forward() method. Without recompiling, changes to the graph don't actually affect
+        # the module's function.
+        self.recompile()
+        # The purpose of 'delete_all_unused_submodules' is to remove attributes of self that point
+        # to other nn.Modules which are no longer used after the graph has been modified.
+        self.delete_all_unused_submodules()
+
+    def set_inputs(self, inputs: list[str | Node]) -> Self:
         """Set the inputs of this graph by finding nodes of the given name(s) and replacing them
         with placeholders. Modifies the graph attribute in-place."""
         # For each named input, erase any existing nodes of the same name and replace them with a
@@ -292,16 +305,11 @@ class GraphModulePlus(GraphModule):
                         new_placeholder.name = node.name
                     dont_remove.append(new_placeholder)
 
-        if eliminate_dead:
-            self.graph.eliminate_dead_code()
-
-        # Remove all other preexisting inputs. This might fail and raise warnings if eliminate_dead
-        # was not set to True, since the graph will refuse to remove nodes that are still used.
-        self._rm_inputs(exceptions=dont_remove)
+        self._clean_up_and_recompile()
 
         return self
 
-    def set_output(self, output: str | Node, eliminate_dead: bool = True) -> Self:
+    def set_output(self, output: str | Node) -> Self:
         """Remove all preexisting outputs and set the output of a graph to the node of the given
         name."""
         # Find the named node to be the arg to a new output node
@@ -313,12 +321,11 @@ class GraphModulePlus(GraphModule):
         with self.graph.inserting_after():
             self.graph.output(node_to_output)
 
-        if eliminate_dead:
-            self.graph.eliminate_dead_code()
+        self._clean_up_and_recompile()
 
         return self
 
-    def set_dict_outputs(self, outputs: Iterable[str | Node], eliminate_dead: bool = True) -> Self:
+    def set_dict_outputs(self, outputs: Iterable[str | Node]) -> Self:
         """Modify the Graph by adding a new node which collects multiple outputs in a dict. This
         new node will then become the output of the graph.
         """
@@ -338,21 +345,16 @@ class GraphModulePlus(GraphModule):
             # Set the new 'collector' node as the output of the graph
             self.graph.output(collector_node)
 
-        if eliminate_dead:
-            self.graph.eliminate_dead_code()
-
-        # Modifying the graph without reassigning it requires a call to recompile
-        self.recompile()
+        self._clean_up_and_recompile()
 
         return self
 
     def set_inputs_and_output(self, inputs: list[str | Node], output: str | Node) -> Self:
         """Set both the inputs and output of this graph. Modifies the graph attribute in-place."""
-        # Important that we set output first and then eliminate dead code while setting inputs.
         if output in inputs:
             raise ValueError("Output node cannot also be an input node.")
-        self.set_output(output, eliminate_dead=False)
-        self.set_inputs(inputs, eliminate_dead=True)
+        self.set_output(output)
+        self.set_inputs(inputs)
 
         return self
 
