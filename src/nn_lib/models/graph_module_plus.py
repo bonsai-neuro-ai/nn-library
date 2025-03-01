@@ -43,7 +43,82 @@ class GraphModulePlus(GraphModule):
         if isinstance(module, GraphModulePlus):
             return GraphModulePlus.new_from_copy(module)
         else:
-            return GraphModulePlus.new_from_copy(symbolic_trace(module))
+            # Note: because GraphModulePlus *supersedes* GraphModule, and the original
+            # fx.symbolic_trace returns a GraphModule, we can now just call symbolic_trace and it
+            # will return a GraphModulePlus.
+            return symbolic_trace(module)
+
+    @staticmethod
+    def new_from_merge(
+        modules: dict[str, nn.Module],
+        rewire_inputs: dict[str, str | Iterable[str]],
+        auto_trace: bool = True,
+    ) -> "GraphModulePlus":
+        """Create a new GraphModulePlus by merging a set of modules together.
+
+        :param modules: a mapping from module names to nn.Modules or GraphModules. The new
+            GraphModulePlus object will have access to all of these modules as attributes.
+        :param rewire_inputs: a mapping from the name of a node in one module to the name(s)
+            of its new input node(s). That is, if rewire_inputs_from[nodeA] = [nodeX, nodeY], then
+            the node named nodeA will ahve its args set to (nodeX, nodeY). This is not the same as
+            *replacing* nodeX and nodeY with nodeA. Node names must be prefixed. That is, if
+            modules={"A": moduleA, "B": moduleB} and moduleA has a node called node1, then the keys
+            or values in rewire_inputs_from should be strings like "A_node1".
+        :param auto_trace: if True, any modules that are not already GraphModules will be traced
+            before being merged. If False, modules that are not GraphModules will be called
+            atomically with a new call_module node.
+        """
+
+        new_graph = Graph()
+        class_name = "Merged" + "".join([m.__class__.__name__ for m in modules.values()])
+        new_node_lookup = {}
+
+        # By default, the output of the new module will be the output of the last module in the
+        # dict. If this is not the desired behavior, the output can be set manually after.
+        new_output_value_node = None
+        for name, module in modules.items():
+            if auto_trace:
+                module = GraphModulePlus.new_from_trace(module)
+
+            match module:
+                case GraphModule():
+                    # If we're merging a GraphModule, copy it by copying the underlying graph
+                    # after adding a prefix to all nodes. The prefix is required so that the
+                    # nodes' args and targets point to attributes of the root dict.
+                    new_graph.graph_copy(
+                        prefix_all_nodes(module.graph, name),
+                        val_map=new_node_lookup,
+                        return_output_node=True,
+                    )
+                    new_output_value_node = new_node_lookup[module.output_value]
+                case nn.Module():
+                    # We should only get here if auto_trace=False and module was a plain-old
+                    # nn.Module. In this case, we'll add it as a call_module node to the graph.
+                    # Its args will be set later.
+                    with new_graph.inserting_after():
+                        new_node = new_graph.call_module(name, args=(), kwargs={})
+                    new_output_value_node = new_node
+                case _:
+                    assert_never(module)
+
+        # Create the new GraphModulePlus object, taking attributes from the modules dict; nodes with
+        # targets pointing to "moduleName.attribute" will automatically resolve, since the
+        # ModuleDict class allows for attribute-style access of its keys.
+        new_module = GraphModulePlus(
+            root=nn.ModuleDict(modules),
+            graph=new_graph,
+            class_name=class_name,
+        )
+
+        # Do the rewiring. Wherever map_from_to[key] = value, we'll set the .args attribute of the
+        # value node to the key node(s).
+        for node, input_nodes in rewire_inputs.items():
+            node = new_module._resolve_nodes(node)[0]
+            node.args = tuple(new_module._resolve_nodes(input_nodes))
+
+        new_module.set_output(new_output_value_node)
+
+        return new_module
 
     def extract_subgraph(
         self, inputs: Optional[list[str | Node]] = None, output: Optional[str | Node] = None
@@ -67,76 +142,6 @@ class GraphModulePlus(GraphModule):
         new_module.set_inputs_and_output(inputs, output)
         new_module.recompile()
         new_module.delete_all_unused_submodules()
-        return new_module
-
-    def replace_head(
-        self,
-        other: nn.Module | GraphModule,
-        map_nodes: dict[str | Node, str | Node],
-        this_prefix: Optional[str] = None,
-        other_prefix: Optional[str] = None,
-    ) -> "GraphModulePlus":
-        """Create a new GraphModulePlus by merging the graph of this module with the graph of
-        another Module. Keys in the map_nodes dict specify node names in this model, and values
-        specify node names in the 'other' module which will be replaced by the nodes in this
-        module. Inputs will come from 'self' and output will come from 'other'.
-
-        To avoid naming collisions, set this_prefix and other_prefix to a string. The prefix also
-        serves as an attribute name for each submodule. That is, if 'self' has attributes layer1
-        and layer2 and 'this_prefix' is None, the new module will also have attributes layer1 and
-        layer2. If 'this_prefix' is 'foo', the new module will have a submodule called 'foo' which
-        will in turn contain attributes layer1 and layer2.
-        """
-        if not isinstance(other, GraphModule):
-            other = GraphModulePlus.new_from_trace(other)
-
-        # Since prefixes might be added below, we'll extract Node objects from their string names
-        # first. Later, the prefix_all_nodes function will update these nodes' names in-place.
-        map_keys = self._resolve_nodes(map_nodes.keys())
-        map_values = other._resolve_nodes(map_nodes.values())
-        map_nodes = dict(zip(map_keys, map_values))
-
-        # Prepare container objects: we need an attribute dict and a graph to hold the new module.
-        new_graph = Graph()
-        new_attrs = nn.ModuleDict()
-        new_node_lookup = {}
-
-        def merge_with_prefix_helper(gm: GraphModule, prefix: Optional[str]):
-            nonlocal new_graph, new_attrs, new_node_lookup
-            if prefix is None:
-                new_graph.graph_copy(gm.graph, val_map=new_node_lookup)
-                duplicates = {key for key in gm._modules.keys() if key in new_attrs}
-                if duplicates:
-                    raise RuntimeError(f"Overwriting existing attributes: {duplicates}")
-                new_attrs.update(gm._modules)
-            else:
-                new_graph.graph_copy(prefix_all_nodes(gm.graph, prefix), val_map=new_node_lookup)
-                if prefix in new_attrs:
-                    raise ValueError(f"Attribute name collision: {prefix}")
-                new_attrs[prefix] = gm
-
-        # Populate the new_graph and new_attrs objects with the nodes and submodules from 'self'
-        # and from 'other'.
-        merge_with_prefix_helper(self, this_prefix)
-        merge_with_prefix_helper(other, other_prefix)
-
-        # Perform the node substitutions
-        for this_node, other_node in map_nodes.items():
-            new_node_lookup[other_node].replace_all_uses_with(new_node_lookup[this_node])
-
-        # TODO - this name will get long if we keep merging modules. Not really a problem, but
-        #  would be nice to have multiple merges result in a more readable name.
-        new_name = "Merged" + self.__class__.__name__ + other.__class__.__name__
-        new_module = GraphModulePlus(root=new_attrs, graph=new_graph, class_name=new_name)
-
-        new_module.set_inputs_and_output(
-            inputs=[new_node_lookup[n] for n in self.inputs],
-            output=new_node_lookup[other.output_value],
-        )
-
-        new_module.recompile()
-        new_module.delete_all_unused_submodules()
-
         return new_module
 
     def squash_all_conv_batchnorm_pairs(self) -> "GraphModulePlus":
