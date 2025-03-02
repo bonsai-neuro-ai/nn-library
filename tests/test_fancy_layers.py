@@ -1,268 +1,274 @@
 import unittest
+from abc import abstractmethod, ABCMeta
+from itertools import product
 
-import numpy as np
 import torch
-import torch.nn as nn
 
 from nn_lib.models.fancy_layers import *
 
 
-class TestRegressableLinear(unittest.TestCase):
-    def test_regression_init(self):
-        for sz in [5, 10, 20]:
-            for bias in [True, False]:
-                with self.subTest(f"sz={sz}, bias={bias}"):
-                    # Make the layer to be fit (random init)
-                    layer = RegressableLinear(10, sz, bias=bias)
+class BaseTestRegressable(metaclass=ABCMeta):
+    @property
+    @abstractmethod
+    def the_class(self):
+        pass
 
-                    # Make a layer from which to generate GT data
-                    gt_layer = RegressableLinear(10, sz, bias=bias)
+    @property
+    @abstractmethod
+    def the_kwargs(self):
+        pass
 
-                    x = torch.randn(500, 10)
-                    y = gt_layer(x)
+    @abstractmethod
+    def check_constraints(self, layer, constructor_kwargs):
+        pass
 
-                    # Assert that at initialization, the predictions are really different
-                    pred_init = layer(x)
-                    assert (
-                        torch.corrcoef(torch.stack([y.flatten(), pred_init.flatten()], dim=0))[
-                            0, 1
-                        ]
-                        < 0.5
-                    )
+    def assert_recovers_gt_helper(self, n_examples, in_shape, **constructor_kwargs):
+        gt_layer = self.the_class(**constructor_kwargs).eval()
 
-                    # Initialize the layer with regression
-                    layer.init_by_regression(x, y)
+        # Jitter the GT parameters further
+        with torch.no_grad():
+            for param in gt_layer.parameters():
+                param.data += 0.1 * torch.randn_like(param)
 
-                    # Check that predictions are now the same
-                    y_pred = layer(x)
-                    assert torch.allclose(y, y_pred, atol=1e-3)
+        true_x = torch.randn(n_examples, *in_shape)
+        true_y = gt_layer(true_x)
 
-                    # Check that the layer has learned the correct weights
-                    assert torch.allclose(layer.weight, gt_layer.weight, atol=1e-3)
-                    if bias:
-                        assert torch.allclose(layer.bias, gt_layer.bias, atol=1e-3)
+        layer = self.the_class(**constructor_kwargs).eval()
 
+        # Assert *not* a match at initialization
+        pred_init = layer(true_x)
+        if torch.allclose(true_y, pred_init, atol=1e-4):
+            self.fail("WTF? The predictions are already the same at initialization")
 
-class TestRegressableConv2d(unittest.TestCase):
-    def test_regression_init_1x1(self):
-        for sz in [5, 10, 20]:
-            for bias in [True, False]:
-                with self.subTest(f"sz={sz}, bias={bias}"):
-                    # Make the layer to be fit (random init)
-                    layer = RegressableConv2d(10, sz, kernel_size=1, bias=bias)
+        # Initialize the layer with regression
+        layer.init_by_regression(true_x, true_y)
 
-                    # Make a layer from which to generate GT data
-                    gt_layer = RegressableConv2d(10, sz, kernel_size=1, bias=bias)
+        # Check that predictions are now the same
+        pred_y = layer(true_x)
+        if not torch.allclose(true_y, pred_y, atol=1e-3):
+            err = (true_y - pred_y).abs().max().item()
+            self.fail(f"The predictions should match the GT after init_by_regression (err={err})")
 
-                    x = torch.randn(500, 10, 32, 32)
-                    y = gt_layer(x)
+    def assert_parameter_sensitivity_after_init(self, in_shape, **constructor_kwargs):
+        layer = self.the_class(**constructor_kwargs).eval()
+        opt = torch.optim.SGD(layer.parameters(), lr=1.0)
 
-                    # Assert that at initialization, the predictions are really different
-                    pred_init = layer(x)
-                    assert (
-                        torch.corrcoef(torch.stack([y.flatten(), pred_init.flatten()], dim=0))[
-                            0, 1
-                        ]
-                        < 0.5
-                    )
+        def _assert_params_change_with_optimizer_step():
+            nonlocal in_shape, layer, opt
 
-                    # Initialize the layer with regression
-                    layer.init_by_regression(x, y)
+            initial_params = {
+                name: param.detach().clone() for name, param in layer.named_parameters()
+            }
 
-                    # Check that predictions are now the same
-                    y_pred = layer(x)
-                    assert torch.allclose(y, y_pred, atol=1e-3)
+            dummy_input = torch.randn(3, *in_shape)
+            dummy_output = layer(dummy_input)
+            dummy_loss = dummy_output.sum()
+            opt.zero_grad()
+            dummy_loss.backward()
+            opt.step()
 
-                    # Check that the layer has learned the correct weights
-                    assert torch.allclose(layer.weight, gt_layer.weight, atol=1e-3)
-                    if bias:
-                        assert torch.allclose(layer.bias, gt_layer.bias, atol=1e-3)
+            # Assert that the parameters have changed
+            for name, param in layer.named_parameters():
+                if torch.allclose(initial_params[name], param):
+                    self.fail(f"Parameter {name} did not change after a step")
 
-    def test_regression_init_3x3(self):
-        for sz in [5, 10, 20]:
-            for bias in [True, False]:
-                with self.subTest(f"sz={sz}, bias={bias}"):
-                    # Make the layer to be fit (random init)
-                    layer = RegressableConv2d(10, sz, kernel_size=(3, 3), padding=1, bias=bias)
+        # Initial check: assert that the parameters change with a step
+        _assert_params_change_with_optimizer_step()
 
-                    # Make a layer from which to generate GT data
-                    gt_layer = RegressableConv2d(10, sz, kernel_size=(3, 3), padding=1, bias=bias)
+        # Call init_by_regression, which will update many parameters in-place. The point is not to
+        # get a *good* initialization, but to see if init_by_regression modifies things in a way
+        # that breaks the optimizer.
+        x = torch.randn(10, *in_shape)
+        y = layer(x).detach()
+        layer.init_by_regression(x, y)
 
-                    x = torch.randn(500, 10, 32, 32)
-                    y = gt_layer(x)
+        # The real test: assert that the parameters change with a step *after* we've called
+        # init_by_regression
+        _assert_params_change_with_optimizer_step()
 
-                    # Assert that at initialization, the predictions are really different
-                    pred_init = layer(x)
-                    assert (
-                        torch.corrcoef(torch.stack([y.flatten(), pred_init.flatten()], dim=0))[
-                            0, 1
-                        ]
-                        < 0.5
-                    )
+    def assert_constraints_satisfied(self, in_shape, **constructor_kwargs):
+        layer = self.the_class(**constructor_kwargs).eval()
 
-                    # Initialize the layer with regression
-                    layer.init_by_regression(x, y)
+        # Let subclass validate the actual constraints
+        self.check_constraints(layer, constructor_kwargs)
 
-                    # Check that predictions are now the same
-                    y_pred = layer(x)
-                    assert torch.allclose(y, y_pred, atol=1e-3)
+        # Call init_by_regression then check again
+        x = torch.randn(500, *in_shape)
+        y = layer(x).detach()
+        layer.init_by_regression(x, y)
 
-                    # Check that the layer has learned the correct weights
-                    assert torch.allclose(layer.weight, gt_layer.weight, atol=1e-3)
-                    if bias:
-                        assert torch.allclose(layer.bias, gt_layer.bias, atol=1e-3)
+        self.check_constraints(layer, constructor_kwargs)
 
+        # Do a few steps of optimization then check again
+        opt = torch.optim.SGD(layer.parameters(), lr=0.001)
+        for _ in range(3):
+            dummy_input = torch.randn(500, *in_shape)
 
-class TestProcrustesLinear(unittest.TestCase):
+            opt.zero_grad()
+            loss = torch.sum(layer(dummy_input) ** 2)
+            loss.backward()
+            opt.step()
 
-    def test_basic_in_out(self):
-        for sz in [5, 10, 20]:
-            for tr in [True, False]:
-                for sc in [True, False]:
-                    with self.subTest(msg=f"sz={sz}, bias={tr}, scale={sc}"):
-                        layer = ProcrustesLinear(10, sz, allow_scale=sc, allow_translation=tr)
-                        x = torch.randn(5, 10)
-                        y = layer(x)
-                        self.assertEqual(y.size(), (5, sz))
+        self.check_constraints(layer, constructor_kwargs)
 
     def test_regression_init(self):
-        for sz in [5, 10, 20]:
-            for sc in [True, False]:
-                for tr in [True, False]:
-                    with self.subTest(msg=f"sz={sz}, scale={sc}, bias={tr}"):
-                        # Make the layer to be fit (random init)
-                        layer = ProcrustesLinear(10, sz, allow_scale=sc, allow_translation=tr)
+        for vals in product(*self.the_kwargs.values()):
+            kwargs = dict(zip(self.the_kwargs.keys(), vals))
+            with self.subTest(msg=", ".join(f"{k}={v}" for k, v in kwargs.items())):
+                self.assert_recovers_gt_helper(n_examples=1000, **kwargs)
 
-                        # Make a layer from which to generate GT data
-                        gt_layer = ProcrustesLinear(10, sz, allow_scale=sc, allow_translation=tr)
-                        if sc:
-                            gt_layer.scale = nn.Parameter(torch.tensor([2.0]))
+    def test_params_grads(self):
+        for vals in product(*self.the_kwargs.values()):
+            kwargs = dict(zip(self.the_kwargs.keys(), vals))
+            with self.subTest(msg=", ".join(f"{k}={v}" for k, v in kwargs.items())):
+                self.assert_parameter_sensitivity_after_init(**kwargs)
 
-                        x = torch.randn(500, 10)
-                        y = gt_layer(x)
-
-                        # Assert that at initialization, the predictions are really different
-                        pred_init = layer(x)
-                        assert (
-                            torch.corrcoef(torch.stack([y.flatten(), pred_init.flatten()], dim=0))[
-                                0, 1
-                            ]
-                            < 0.5
-                        )
-
-                        # Initialize the layer with regression
-                        layer.init_by_regression(x, y)
-
-                        # Check that predictions are now the same
-                        y_pred = layer(x)
-
-                        # if sz == 5:
-                        #     import matplotlib.pyplot as plt
-                        #     plt.scatter(y.detach().numpy(), y_pred.detach().numpy(), marker='.', label='regression')
-                        #     plt.scatter(y.detach().numpy(), pred_init.detach().numpy(), marker='.', label='init')
-                        #     plt.axis('equal')
-                        #     plt.grid()
-                        #     plt.legend()
-                        #     plt.plot(plt.ylim(), plt.ylim(), 'k--')
-                        #     plt.title(f"sz={sz}, scale={sc}, bias={tr}")
-                        #     plt.show()
-
-                        assert torch.allclose(y, y_pred, atol=1e-3)
-
-                        # Check that the layer has learned the correct weights
-                        assert torch.allclose(layer.weight, gt_layer.weight, atol=1e-3)
-                        if sc:
-                            assert np.isclose(layer.scale.item(), 2.0, atol=1e-3)
-                        if tr:
-                            assert torch.allclose(layer.bias, gt_layer.bias, atol=1e-3)
+    def test_parametrization(self):
+        for vals in product(*self.the_kwargs.values()):
+            kwargs = dict(zip(self.the_kwargs.keys(), vals))
+            with self.subTest(msg=", ".join(f"{k}={v}" for k, v in kwargs.items())):
+                self.assert_constraints_satisfied(**kwargs)
 
 
-class TestProcrustesConv2d(unittest.TestCase):
+class TestRegressableLinear(unittest.TestCase, BaseTestRegressable):
+    the_class = RegressableLinear
+    the_kwargs = {
+        "in_shape": [(10,)],
+        "in_features": [10],
+        "out_features": [5, 10, 20],
+        "bias": [True, False],
+    }
 
-    def test_basic_in_out_1x1(self):
-        for sz in [5, 10, 20]:
-            for tr in [True, False]:
-                for sc in [True, False]:
-                    with self.subTest(msg=f"sz={sz}, bias={tr}, scale={sc}"):
-                        layer = ProcrustesConv2d(
-                            in_channels=10,
-                            out_channels=sz,
-                            kernel_size=1,
-                            allow_scale=sc,
-                            allow_translation=tr,
-                        )
-                        x = torch.randn(5, 10, 32, 32)
-                        y = layer(x)
-                        self.assertEqual(y.size(), (5, sz, 32, 32))
+    def check_constraints(self, layer, constructor_kwargs):
+        self.assertEqual(
+            layer.weight.shape,
+            (constructor_kwargs["out_features"], constructor_kwargs["in_features"]),
+        )
 
-    def test_basic_in_out_3x3(self):
-        for sz in [5, 10, 20]:
-            for tr in [True, False]:
-                for sc in [True, False]:
-                    with self.subTest(msg=f"sz={sz}, bias={tr}, scale={sc}"):
-                        layer = ProcrustesConv2d(
-                            in_channels=10,
-                            out_channels=sz,
-                            kernel_size=(3, 3),
-                            padding=1,
-                            allow_scale=sc,
-                            allow_translation=tr,
-                        )
-                        x = torch.randn(5, 10, 32, 32)
-                        y = layer(x)
-                        self.assertEqual(y.size(), (5, sz, 32, 32))
+        if constructor_kwargs["bias"]:
+            self.assertEqual(layer.bias.numel(), constructor_kwargs["out_features"])
+        else:
+            self.assertIsNone(layer.bias)
 
-    def test_regression_init_1x1(self):
-        for sz in [5, 10, 20]:
-            for sc in [True, False]:
-                for tr in [True, False]:
-                    with self.subTest(msg=f"sz={sz}, scale={sc}, bias={tr}"):
-                        # Make the layer to be fit (random init)
-                        layer = ProcrustesConv2d(
-                            in_channels=10,
-                            out_channels=sz,
-                            kernel_size=1,
-                            allow_scale=sc,
-                            allow_translation=tr,
-                        )
 
-                        # Make a layer from which to generate GT data
-                        gt_layer = ProcrustesConv2d(
-                            in_channels=10,
-                            out_channels=sz,
-                            kernel_size=1,
-                            allow_scale=sc,
-                            allow_translation=tr,
-                        )
-                        if sc:
-                            gt_layer.linear_op.scale = nn.Parameter(torch.tensor([2.0]))
+class TestLowRankLinear(unittest.TestCase, BaseTestRegressable):
+    the_class = LowRankLinear
+    the_kwargs = {
+        "in_shape": [(10,)],
+        "in_features": [10],
+        "out_features": [5, 10, 20],
+        "rank": [1, 3, 5],
+        "bias": [True, False],
+    }
 
-                        x = torch.randn(500, 10, 32, 32)
-                        y = gt_layer(x)
+    def check_constraints(self, layer, constructor_kwargs):
+        self.assertEqual(
+            layer.weight.shape,
+            (constructor_kwargs["out_features"], constructor_kwargs["in_features"]),
+        )
 
-                        # Assert that at initialization, the predictions are really different
-                        pred_init = layer(x)
-                        assert (
-                            torch.corrcoef(torch.stack([y.flatten(), pred_init.flatten()], dim=0))[
-                                0, 1
-                            ]
-                            < 0.5
-                        )
+        # Rank check
+        self.assertEqual(torch.linalg.matrix_rank(layer.weight), constructor_kwargs["rank"])
 
-                        # Initialize the layer with regression
-                        layer.init_by_regression(x, y)
+        if constructor_kwargs["bias"]:
+            self.assertEqual(layer.bias.numel(), constructor_kwargs["out_features"])
+        else:
+            self.assertIsNone(layer.bias)
 
-                        # Check that predictions are now the same
-                        y_pred = layer(x)
-                        assert torch.allclose(y, y_pred, atol=1e-3)
 
-                        # Check that the layer has learned the correct weights
-                        assert torch.allclose(
-                            layer.linear_op.weight, gt_layer.linear_op.weight, atol=1e-3
-                        )
-                        if sc:
-                            assert np.isclose(layer.linear_op.scale.item(), 2.0, atol=1e-3)
-                        if tr:
-                            assert torch.allclose(
-                                layer.linear_op.bias, gt_layer.linear_op.bias, atol=1e-3
-                            )
+class TestProcrustesLinear(unittest.TestCase, BaseTestRegressable):
+    the_class = ProcrustesLinear
+    the_kwargs = {
+        "in_shape": [(10,)],
+        "in_features": [10],
+        "out_features": [5, 10, 20],
+        "bias": [True, False],
+        "scale": [True, False],
+    }
+
+    def check_constraints(self, layer, constructor_kwargs):
+        self.assertEqual(
+            layer.weight.shape,
+            (constructor_kwargs["out_features"], constructor_kwargs["in_features"]),
+        )
+
+        if constructor_kwargs["bias"]:
+            self.assertEqual(layer.bias.numel(), constructor_kwargs["out_features"])
+        else:
+            self.assertIsNone(layer.bias)
+
+        # Orthonormal check
+        if constructor_kwargs["out_features"] >= constructor_kwargs["in_features"]:
+            wwT = layer.weight.T @ layer.weight
+        else:
+            wwT = layer.weight @ layer.weight.T
+        wwT = wwT.detach()
+
+        diag = torch.diag(wwT)
+        avg_diag = torch.mean(diag)
+        if not torch.allclose(diag, torch.ones_like(diag) * avg_diag, atol=1e-4):
+            self.fail("Failed orthogonality check: non-constant diagonal elements")
+
+        if constructor_kwargs["scale"]:
+            the_scale = dict(layer.named_parameters())["parametrizations.weight.original1"].detach()
+            if not torch.isclose(avg_diag, the_scale**2):
+                self.fail("Failed diagonal scale check")
+
+            wwT = wwT / the_scale**2
+
+        if not torch.allclose(wwT, torch.eye(wwT.size(0)), atol=1e-4):
+            self.fail("Failed orthogonality check: (rescaled) w@w^T != I")
+
+
+class BaseTestRegressableConv2d(BaseTestRegressable):
+    def check_constraints(self, layer, constructor_kwargs):
+        # Currently not doing any explicit constraint checking for conv2d layers... counting on
+        # the linear tests to catch any issues.
+        pass
+
+    def test_matches_conv2d(self):
+        for vals in product(*self.the_kwargs.values()):
+            kwargs = dict(zip(self.the_kwargs.keys(), vals))
+            with self.subTest(msg=", ".join(f"{k}={v}" for k, v in kwargs.items())):
+                dummy_input = torch.randn(10, *kwargs.pop("in_shape"))
+                layer = self.the_class(**kwargs)
+                conv2d = layer.to_conv2d()
+
+                out1 = conv2d(dummy_input)
+                out2 = layer(dummy_input)
+
+                if not torch.allclose(out1, out2, atol=1e-4):
+                    self.fail(f"Does not match Conv2d")
+
+
+class TestRegressableConv2d(unittest.TestCase, BaseTestRegressableConv2d):
+    the_class = RegressableConv2d
+    the_kwargs = {
+        "in_shape": [(10, 16, 16)],
+        "in_channels": [10],
+        "out_channels": [5, 10, 20],
+        "kernel_size": [1, 3],
+    }
+
+
+class TestLowRankConv2d(unittest.TestCase, BaseTestRegressableConv2d):
+    the_class = LowRankConv2d
+    the_kwargs = {
+        "in_shape": [(10, 16, 16)],
+        "in_channels": [10],
+        "out_channels": [5, 10, 20],
+        "kernel_size": [1, 3],
+        "rank": [3],
+    }
+
+
+class TestProcrustesConv2d(unittest.TestCase, BaseTestRegressableConv2d):
+    the_class = ProcrustesConv2d
+    the_kwargs = {
+        "in_shape": [(10, 16, 16)],
+        "in_channels": [10],
+        "out_channels": [5, 10, 20],
+        "kernel_size": [1, 3],
+        "bias": [False, True],
+        "scale": [False, True],
+    }
