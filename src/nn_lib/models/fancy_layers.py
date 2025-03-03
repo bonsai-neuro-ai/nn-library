@@ -1,7 +1,6 @@
 import abc
 from typing import Any, Self, Optional
 
-import numpy as np
 import torch
 from torch import nn, vmap
 from torch.nn import functional as F
@@ -23,9 +22,12 @@ __all__ = [
 
 class Regressable(abc.ABC):
     @abc.abstractmethod
-    def init_by_regression(self, from_data: torch.Tensor, to_data: torch.Tensor) -> Self:
+    def init_by_regression(
+        self, from_data: torch.Tensor, to_data: torch.Tensor, transpose: bool = False
+    ) -> Self:
         """Initialize parameters for this layer by regressing its inputs (from_data) to its
-        outputs (to_data).
+        outputs (to_data). If transpose is True, swaps the roles of from_data and to_data so that
+        the to_data -> from_data least squares regression is performed.
         """
 
 
@@ -57,7 +59,7 @@ class RegressableLinear(nn.Linear, Regressable):
 
     @torch.no_grad()
     def init_by_regression(
-        self, from_data: torch.Tensor, to_data: torch.Tensor
+        self, from_data: torch.Tensor, to_data: torch.Tensor, transpose: bool = False
     ) -> "RegressableLinear":
         if self.bias is not None:
             # If we have a bias, we need to center the data
@@ -68,10 +70,15 @@ class RegressableLinear(nn.Linear, Regressable):
         else:
             mean_x = torch.zeros_like(from_data.mean(0))
             mean_y = torch.zeros_like(to_data.mean(0))
-        lstsq = torch.linalg.lstsq(from_data, to_data)
 
-        self.set_weight(lstsq.solution.T)
-        self.set_bias(mean_y - mean_x @ self.weight.T)
+        if transpose:
+            lstsq = torch.linalg.lstsq(to_data, from_data)
+            self.set_weight(lstsq.solution)
+            self.set_bias(mean_y - mean_x @ self.weight.T)
+        else:
+            lstsq = torch.linalg.lstsq(from_data, to_data)
+            self.set_weight(lstsq.solution.T)
+            self.set_bias(mean_y - mean_x @ self.weight.T)
         return self
 
 
@@ -177,7 +184,9 @@ def make_conv2d_from_linear(linear_cls: type[RegressableLinear]) -> type[Regress
             return result.reshape(batch, features, *conv2d_shape(x.shape[-2:], **self.conv_params))
 
         @torch.no_grad()
-        def init_by_regression(self, from_data: torch.Tensor, to_data: torch.Tensor) -> Self:
+        def init_by_regression(
+            self, from_data: torch.Tensor, to_data: torch.Tensor, transpose: bool = False
+        ) -> Self:
             b, c, h, w = from_data.shape
             new_h, new_w = conv2d_shape((h, w), **self.conv_params)
             assert to_data.shape[-2:] == (new_h, new_w)
@@ -188,6 +197,7 @@ def make_conv2d_from_linear(linear_cls: type[RegressableLinear]) -> type[Regress
             self.linear.init_by_regression(
                 flat_from.permute(0, 2, 1).reshape(b * new_h * new_w, -1),
                 flat_to.permute(0, 2, 1).reshape(b * new_h * new_w, -1),
+                transpose=transpose,
             )
             return self
 
