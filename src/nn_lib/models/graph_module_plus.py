@@ -6,10 +6,19 @@ from torch import nn
 from torch.fx import symbolic_trace, GraphModule, Graph, Node
 
 from nn_lib.models.graph_utils import prefix_all_nodes
+from nn_lib.utils import supersedes
 
 
+@supersedes(GraphModule)
 class GraphModulePlus(GraphModule):
-    """An extension of torch.fx.GraphModule that provides additional functionality."""
+    """An extension of torch.fx.GraphModule that provides additional functionality.
+
+    WARNING: We globally inject this class into existing torch.fx code by replacing the
+    GraphModule.__new__ class method with the @supersedes decorator. This is a hacky way to
+    extend the functionality of torch.fx globally, such that existing methods in torch.fx which
+    used to return a GraphModule should now return a GraphModulePlus. We should be extra careful
+    when overriding fx.GraphModule methods in this class.
+    """
 
     ###############
     ## Factories ##
@@ -34,7 +43,82 @@ class GraphModulePlus(GraphModule):
         if isinstance(module, GraphModulePlus):
             return GraphModulePlus.new_from_copy(module)
         else:
-            return GraphModulePlus.new_from_copy(symbolic_trace(module))
+            # Note: because GraphModulePlus *supersedes* GraphModule, and the original
+            # fx.symbolic_trace returns a GraphModule, we can now just call symbolic_trace and it
+            # will return a GraphModulePlus.
+            return symbolic_trace(module)
+
+    @staticmethod
+    def new_from_merge(
+        modules: dict[str, nn.Module],
+        rewire_inputs: dict[str, str | Iterable[str]],
+        auto_trace: bool = True,
+    ) -> "GraphModulePlus":
+        """Create a new GraphModulePlus by merging a set of modules together.
+
+        :param modules: a mapping from module names to nn.Modules or GraphModules. The new
+            GraphModulePlus object will have access to all of these modules as attributes.
+        :param rewire_inputs: a mapping from the name of a node in one module to the name(s)
+            of its new input node(s). That is, if rewire_inputs_from[nodeA] = [nodeX, nodeY], then
+            the node named nodeA will ahve its args set to (nodeX, nodeY). This is not the same as
+            *replacing* nodeX and nodeY with nodeA. Node names must be prefixed. That is, if
+            modules={"A": moduleA, "B": moduleB} and moduleA has a node called node1, then the keys
+            or values in rewire_inputs_from should be strings like "A_node1".
+        :param auto_trace: if True, any modules that are not already GraphModules will be traced
+            before being merged. If False, modules that are not GraphModules will be called
+            atomically with a new call_module node.
+        """
+
+        new_graph = Graph()
+        class_name = "Merged" + "".join([m.__class__.__name__ for m in modules.values()])
+        new_node_lookup = {}
+
+        # By default, the output of the new module will be the output of the last module in the
+        # dict. If this is not the desired behavior, the output can be set manually after.
+        new_output_value_node = None
+        for name, module in modules.items():
+            if auto_trace:
+                module = GraphModulePlus.new_from_trace(module)
+
+            match module:
+                case GraphModule():
+                    # If we're merging a GraphModule, copy it by copying the underlying graph
+                    # after adding a prefix to all nodes. The prefix is required so that the
+                    # nodes' args and targets point to attributes of the root dict.
+                    new_graph.graph_copy(
+                        prefix_all_nodes(module.graph, name),
+                        val_map=new_node_lookup,
+                        return_output_node=True,
+                    )
+                    new_output_value_node = new_node_lookup[module.output_value]
+                case nn.Module():
+                    # We should only get here if auto_trace=False and module was a plain-old
+                    # nn.Module. In this case, we'll add it as a call_module node to the graph.
+                    # Its args will be set later.
+                    with new_graph.inserting_after():
+                        new_node = new_graph.call_module(name, args=(), kwargs={})
+                    new_output_value_node = new_node
+                case _:
+                    assert_never(module)
+
+        # Create the new GraphModulePlus object, taking attributes from the modules dict; nodes with
+        # targets pointing to "moduleName.attribute" will automatically resolve, since the
+        # ModuleDict class allows for attribute-style access of its keys.
+        new_module = GraphModulePlus(
+            root=nn.ModuleDict(modules),
+            graph=new_graph,
+            class_name=class_name,
+        )
+
+        # Do the rewiring. Wherever map_from_to[key] = value, we'll set the .args attribute of the
+        # value node to the key node(s).
+        for node, input_nodes in rewire_inputs.items():
+            node = new_module._resolve_nodes(node)[0]
+            node.args = tuple(new_module._resolve_nodes(input_nodes))
+
+        new_module.set_output(new_output_value_node)
+
+        return new_module
 
     def extract_subgraph(
         self, inputs: Optional[list[str | Node]] = None, output: Optional[str | Node] = None
@@ -58,76 +142,6 @@ class GraphModulePlus(GraphModule):
         new_module.set_inputs_and_output(inputs, output)
         new_module.recompile()
         new_module.delete_all_unused_submodules()
-        return new_module
-
-    def replace_head(
-        self,
-        other: nn.Module | GraphModule,
-        map_nodes: dict[str | Node, str | Node],
-        this_prefix: Optional[str] = None,
-        other_prefix: Optional[str] = None,
-    ) -> "GraphModulePlus":
-        """Create a new GraphModulePlus by merging the graph of this module with the graph of
-        another Module. Keys in the map_nodes dict specify node names in this model, and values
-        specify node names in the 'other' module which will be replaced by the nodes in this
-        module. Inputs will come from 'self' and output will come from 'other'.
-
-        To avoid naming collisions, set this_prefix and other_prefix to a string. The prefix also
-        serves as an attribute name for each submodule. That is, if 'self' has attributes layer1
-        and layer2 and 'this_prefix' is None, the new module will also have attributes layer1 and
-        layer2. If 'this_prefix' is 'foo', the new module will have a submodule called 'foo' which
-        will in turn contain attributes layer1 and layer2.
-        """
-        if not isinstance(other, GraphModule):
-            other = GraphModulePlus.new_from_trace(other)
-
-        # Since prefixes might be added below, we'll extract Node objects from their string names
-        # first. Later, the prefix_all_nodes function will update these nodes' names in-place.
-        map_keys = self._resolve_nodes(map_nodes.keys())
-        map_values = other._resolve_nodes(map_nodes.values())
-        map_nodes = dict(zip(map_keys, map_values))
-
-        # Prepare container objects: we need an attribute dict and a graph to hold the new module.
-        new_graph = Graph()
-        new_attrs = nn.ModuleDict()
-        new_node_lookup = {}
-
-        def merge_with_prefix_helper(gm: GraphModule, prefix: Optional[str]):
-            nonlocal new_graph, new_attrs, new_node_lookup
-            if prefix is None:
-                new_graph.graph_copy(gm.graph, val_map=new_node_lookup)
-                duplicates = {key for key in gm._modules.keys() if key in new_attrs}
-                if duplicates:
-                    raise RuntimeError(f"Overwriting existing attributes: {duplicates}")
-                new_attrs.update(gm._modules)
-            else:
-                new_graph.graph_copy(prefix_all_nodes(gm.graph, prefix), val_map=new_node_lookup)
-                if prefix in new_attrs:
-                    raise ValueError(f"Attribute name collision: {prefix}")
-                new_attrs[prefix] = gm
-
-        # Populate the new_graph and new_attrs objects with the nodes and submodules from 'self'
-        # and from 'other'.
-        merge_with_prefix_helper(self, this_prefix)
-        merge_with_prefix_helper(other, other_prefix)
-
-        # Perform the node substitutions
-        for this_node, other_node in map_nodes.items():
-            new_node_lookup[other_node].replace_all_uses_with(new_node_lookup[this_node])
-
-        # TODO - this name will get long if we keep merging modules. Not really a problem, but
-        #  would be nice to have multiple merges result in a more readable name.
-        new_name = "Merged" + self.__class__.__name__ + other.__class__.__name__
-        new_module = GraphModulePlus(root=new_attrs, graph=new_graph, class_name=new_name)
-
-        new_module.set_inputs_and_output(
-            inputs=[new_node_lookup[n] for n in self.inputs],
-            output=new_node_lookup[other.output_value],
-        )
-
-        new_module.recompile()
-        new_module.delete_all_unused_submodules()
-
         return new_module
 
     def squash_all_conv_batchnorm_pairs(self) -> "GraphModulePlus":
@@ -177,9 +191,7 @@ class GraphModulePlus(GraphModule):
         # Post-surgery, clean up the graph. This will remove all unused nodes, so any conv/bn
         # nodes that we squashed end up removed but only if they are no longer used in any other
         # part of the graph.
-        new_module.graph.eliminate_dead_code()
-        new_module.recompile()
-        new_module.delete_all_unused_submodules()
+        new_module._clean_up_and_recompile()
 
         return new_module
 
@@ -210,21 +222,6 @@ class GraphModulePlus(GraphModule):
         # This relies on the fact that python dicts are ordered, so the output will be in the same
         # order as the input.
         return list(lookup_node_by_name.values())
-
-    def _rm_inputs(self, exceptions: Optional[Iterable[Node]] = None) -> Self:
-        # Cast to a list so that we're not modifying the graph while iterating over it.
-        if exceptions is None:
-            exceptions = []
-        for node in list(self.graph.nodes):
-            if node.op == "placeholder" and node not in exceptions:
-                try:
-                    self.graph.erase_node(node)
-                except RuntimeError:
-                    warnings.warn(
-                        f"Could not remove input node {node.name}. Either this node is still "
-                        f"genuinely in use, or you should call eliminate_dead_code() first."
-                    )
-        return self
 
     @property
     def inputs(self) -> List[Node]:
@@ -271,7 +268,37 @@ class GraphModulePlus(GraphModule):
     ## Graph manipulation ##
     ########################
 
-    def set_inputs(self, inputs: list[str | Node], eliminate_dead: bool = True) -> Self:
+    def eliminate_dead(self, remove_unused_inputs: bool = True) -> Self:
+        """Call self.graph.eliminate_dead_code() AND remove any lingering unused placeholder nodes,
+        unless remove_unused_inputs=False.
+        """
+        # elminiate_dead_code() works backwards from outputs to inputs (it assumes the graph is
+        # topologically sorted), removing any node that doesn't have users.
+        self.graph.eliminate_dead_code()
+
+        # For reasons unknown, eliminate_dead_code() doesn't remove unused placeholders. We'll do
+        # that manually here.
+        if remove_unused_inputs:
+            # Cast to a list so that we're not modifying the graph while iterating over it.
+            for node in list(self.graph.nodes):
+                if node.op == "placeholder" and len(node.users) == 0:
+                    self.graph.erase_node(node)
+
+        return self
+
+    def _clean_up_and_recompile(self):
+        # The purpose of 'eliminate_dead' is to remove Nodes from the Graph that have no path to
+        # any output node.
+        self.eliminate_dead()
+        # The purpose of 'recompile' is to take the modified Graph recompile it into a
+        # self.forward() method. Without recompiling, changes to the graph don't actually affect
+        # the module's function.
+        self.recompile()
+        # The purpose of 'delete_all_unused_submodules' is to remove attributes of self that point
+        # to other nn.Modules which are no longer used after the graph has been modified.
+        self.delete_all_unused_submodules()
+
+    def set_inputs(self, inputs: list[str | Node]) -> Self:
         """Set the inputs of this graph by finding nodes of the given name(s) and replacing them
         with placeholders. Modifies the graph attribute in-place."""
         # For each named input, erase any existing nodes of the same name and replace them with a
@@ -292,16 +319,11 @@ class GraphModulePlus(GraphModule):
                         new_placeholder.name = node.name
                     dont_remove.append(new_placeholder)
 
-        if eliminate_dead:
-            self.graph.eliminate_dead_code()
-
-        # Remove all other preexisting inputs. This might fail and raise warnings if eliminate_dead
-        # was not set to True, since the graph will refuse to remove nodes that are still used.
-        self._rm_inputs(exceptions=dont_remove)
+        self._clean_up_and_recompile()
 
         return self
 
-    def set_output(self, output: str | Node, eliminate_dead: bool = True) -> Self:
+    def set_output(self, output: str | Node) -> Self:
         """Remove all preexisting outputs and set the output of a graph to the node of the given
         name."""
         # Find the named node to be the arg to a new output node
@@ -313,12 +335,11 @@ class GraphModulePlus(GraphModule):
         with self.graph.inserting_after():
             self.graph.output(node_to_output)
 
-        if eliminate_dead:
-            self.graph.eliminate_dead_code()
+        self._clean_up_and_recompile()
 
         return self
 
-    def set_dict_outputs(self, outputs: Iterable[str | Node], eliminate_dead: bool = True) -> Self:
+    def set_dict_outputs(self, outputs: Iterable[str | Node]) -> Self:
         """Modify the Graph by adding a new node which collects multiple outputs in a dict. This
         new node will then become the output of the graph.
         """
@@ -338,21 +359,16 @@ class GraphModulePlus(GraphModule):
             # Set the new 'collector' node as the output of the graph
             self.graph.output(collector_node)
 
-        if eliminate_dead:
-            self.graph.eliminate_dead_code()
-
-        # Modifying the graph without reassigning it requires a call to recompile
-        self.recompile()
+        self._clean_up_and_recompile()
 
         return self
 
     def set_inputs_and_output(self, inputs: list[str | Node], output: str | Node) -> Self:
         """Set both the inputs and output of this graph. Modifies the graph attribute in-place."""
-        # Important that we set output first and then eliminate dead code while setting inputs.
         if output in inputs:
             raise ValueError("Output node cannot also be an input node.")
-        self.set_output(output, eliminate_dead=False)
-        self.set_inputs(inputs, eliminate_dead=True)
+        self.set_output(output)
+        self.set_inputs(inputs)
 
         return self
 

@@ -2,9 +2,23 @@ import unittest
 from warnings import catch_warnings
 
 import torch
+from torch import nn
+from torch.fx import symbolic_trace
 from torchvision.models.resnet import resnet18, resnet34
 from nn_lib.models.graph_module_plus import GraphModulePlus
 from nn_lib.models.utils import frozen
+
+
+class FakeStitchingLayerForTesting(nn.Module):
+    def __init__(self, in_f, out_f):
+        super().__init__()
+        self.conv = nn.Conv2d(in_f, out_f, kernel_size=1, padding=0, stride=1)
+
+    def forward(self, x):
+        return self.conv(x)
+
+    def update_weight(self, mul):
+        self.conv.weight.data *= mul
 
 
 class TestGraphModulePlus(unittest.TestCase):
@@ -15,6 +29,15 @@ class TestGraphModulePlus(unittest.TestCase):
         self.gm = GraphModulePlus.new_from_trace(self.reference_module)
         self.dummy_input = torch.randn(1, 3, 224, 224)
 
+    def _get_dummy_rep(self, node_name):
+        return GraphModulePlus.new_from_copy(self.gm).set_output(node_name)(self.dummy_input)
+
+    def test_superseded(self):
+        # Thanks to the @supersedes decorator, even built-in fx code that would normally return a
+        # fx.GraphModule should return a GraphModulePlus instead
+        gm = symbolic_trace(self.reference_module)
+        self.assertIsInstance(gm, GraphModulePlus)
+
     def test_inputs(self):
         inputs = self.gm.inputs
         self.assertEqual(len(inputs), 1)
@@ -24,24 +47,22 @@ class TestGraphModulePlus(unittest.TestCase):
         self.assertEqual(self.gm.output.name, "output")
         self.assertEqual(self.gm.output_value.name, "fc")
 
-    def test_set_inputs_no_eliminate_dead(self):
-        # Without eliminate_dead, the method should raise a UserWarning when it tries to get rid
-        # of the previous input "x"
-        with catch_warnings(record=True) as w:
-            self.gm.set_inputs(["maxpool"], eliminate_dead=False)
-        self.assertEqual(len(w), 1)
-        self.assertIn("Could not remove input node x.", str(w[0].message))
-
-    def test_set_inputs_eliminate_dead(self):
+    def test_set_inputs(self):
         # With eliminate_dead, the method should just work without warnings
+        og_rep = self._get_dummy_rep("maxpool")
+        og_output = self.gm(self.dummy_input)
         with catch_warnings(record=True) as w:
-            self.gm.set_inputs(["maxpool"], eliminate_dead=True)
+            self.gm.set_inputs(["maxpool"])
+        print("Warnings:", *w, sep="\n")
         self.assertEqual(len(w), 0)
         inputs = self.gm.inputs
         self.assertEqual(len(inputs), 1)
         self.assertEqual(inputs[0].name, "maxpool")
+        new_output = self.gm(og_rep)
+        torch.testing.assert_allclose(og_output, new_output)
 
     def test_set_output(self):
+        og_result = self._get_dummy_rep("layer1_1_relu")
         num_nodes_before = len(list(self.gm.graph.nodes))
         the_node = self.gm._resolve_nodes("layer1_1_relu")[0]
         self.gm.set_output("layer1_1_relu")
@@ -49,6 +70,9 @@ class TestGraphModulePlus(unittest.TestCase):
 
         num_nodes_after = len(list(self.gm.graph.nodes))
         self.assertLess(num_nodes_after, num_nodes_before)
+
+        new_result = self.gm(self.dummy_input)
+        torch.testing.assert_allclose(og_result, new_result)
 
     def test_set_dict_outputs(self):
         self.gm.set_dict_outputs(outputs=["add_1", "add_2", "add_3"])
@@ -133,34 +157,82 @@ class TestGraphModulePlus(unittest.TestCase):
                 f"Expected {k} to be updated",
             )
 
-    def test_replace_head_name_collision(self):
-        model2 = GraphModulePlus.new_from_trace(resnet34())
+    def test_merge_two_modules_auto_trace(self):
+        modelA, modelB = resnet18(), resnet34()
+        merged_model = GraphModulePlus.new_from_merge(
+            modules={"modelA": modelA, "modelB": modelB},
+            rewire_inputs={"modelB_layer2_1_relu_1": "modelA_add_3"},
+            auto_trace=True,
+        )
 
-        # Currently, we actually expect name collisions to be triggered if model1 and model2 have
-        # overlapping attribute names, even if sub-models model1[input:add_1] and
-        # model2[add_2:output] do not. This could be fixed someday, but for now this test is
-        # asserting that the current overly-cautious behavior is correct.
-        with self.assertRaises(RuntimeError):
-            stitched_model = self.gm.replace_head(model2, {"add_1": "add_2"})
+        self.assertEqual(merged_model.__class__.__name__, "MergedResNetResNet")
 
-    def test_replace_head_prefix(self):
-        # Repeat the test test_replace_head_name_collision, but prefix the model attributes to avoid
-        # name collisions
-        model2 = GraphModulePlus.new_from_trace(resnet34())
+        # Make sure we can still run the model and get outputs without crashing
+        merged_model(self.dummy_input)
 
-        with catch_warnings(record=True) as w:
-            stitched_model = self.gm.replace_head(
-                model2, {"add_1": "add_2"}, this_prefix="model1", other_prefix="model2"
-            )
+        # With auto_trace, we expect the merged model to have lots of nodes (copying ops from
+        # modelA and from modelB).
+        self.assertGreater(len(merged_model.graph.nodes), 100)
 
-        self.assertEqual(len(w), 0, "Expected no warnings but got: " + str(w))
+        # Nodes downstream of the rewire in A or upstream in B should no longer exist
+        with self.assertRaises(ValueError):
+            merged_model._resolve_nodes("modelA_add_4")
+            merged_model._resolve_nodes("modelB_add_1")
 
-        # Check that the model runs
-        out = stitched_model(self.dummy_input)
+    def test_merge_three_modules_stitching(self):
+        modelA = GraphModulePlus.new_from_trace(resnet18())
+        modelB = GraphModulePlus.new_from_trace(resnet34())
+        stitcher = FakeStitchingLayerForTesting(512, 128)
+        merged_model = GraphModulePlus.new_from_merge(
+            modules={"modelA": modelA, "stitching_layer": stitcher, "modelB": modelB},
+            rewire_inputs={
+                "stitching_layer": "modelA_add_7",
+                "modelB_layer2_1_relu_1": "stitching_layer",
+            },
+            auto_trace=False,
+        )
 
-        # Check that it has the expected input and output names
-        self.assertEqual(stitched_model.inputs[0].name, "model1_x")
-        self.assertEqual(stitched_model.output_value.name, "model2_fc")
+        self.assertEqual(
+            merged_model.__class__.__name__, "MergedResNetFakeStitchingLayerForTestingResNet"
+        )
+
+        # Nodes downstream of the rewire in A or upstream in B should no longer exist
+        with self.assertRaises(ValueError):
+            merged_model._resolve_nodes("modelA_add_4")
+            merged_model._resolve_nodes("modelB_add_1")
+
+        # We should still have access to the stitching layer's methods, and it should affect the
+        # merged model's behavior because the underlying parameters are shared.
+        out1 = merged_model(self.dummy_input)
+        merged_model.stitching_layer.update_weight(0.5)
+        out2 = merged_model(self.dummy_input)
+
+        self.assertFalse(torch.allclose(out1, out2))
+
+    def test_merge_three_modules_stitching_auto_trace(self):
+        """Same as the previous test, but now with auto_trace=True. It's expected behavior that
+        we can no longer access the update_weight method of the *traced* stitching layer. A
+        to-do for someday is to make it so that we can still access the methods of the original
+        modules even when tracing.
+        """
+        modelA = GraphModulePlus.new_from_trace(resnet18())
+        modelB = GraphModulePlus.new_from_trace(resnet34())
+        stitcher = FakeStitchingLayerForTesting(512, 128)
+        merged_model = GraphModulePlus.new_from_merge(
+            modules={"modelA": modelA, "stitching_layer": stitcher, "modelB": modelB},
+            rewire_inputs={
+                "stitching_layer_conv": "modelA_add_7",
+                "modelB_layer2_1_relu_1": "stitching_layer_conv",
+            },
+            auto_trace=True,
+        )
+
+        self.assertEqual(
+            merged_model.__class__.__name__, "MergedResNetFakeStitchingLayerForTestingResNet"
+        )
+
+        with self.assertRaises(AttributeError):
+            merged_model.stitching_layer.update_weight(0.5)
 
 
 if __name__ == "__main__":

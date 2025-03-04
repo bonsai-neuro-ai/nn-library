@@ -1,36 +1,87 @@
 import warnings
 from copy import deepcopy
 from typing import Iterable, Optional, Any, assert_never
-from nn_lib.utils import deprecated
 
 import pydot
 from torch import nn
 from torch.fx import GraphModule, Graph, Node, symbolic_trace
 
+from nn_lib.utils import deprecated
 
 __all__ = [
-    "GraphModule",
-    "Graph",
-    "Node",
-    "get_nodes_by_name",
-    "get_inputs",
-    "get_output",
-    "get_subgraph",
-    "get_topology_for_subset_of_layers",
     "prefix_all_nodes",
-    "update_all_inplace_ops",
-    "set_dict_outputs_by_name",
-    "set_inputs_and_output_by_name",
-    "step_through_call",
-    "stitch_graphs",
-    "squash_all_conv_batchnorm_pairs",
-    "symbolic_trace",
-    "to_dot",
+    "get_topology_for_subset_of_layers",
 ]
 
 
 # TODO - write a helper for tracing R-CNN type models (where the model forward() contains an input-
 #  dependent loop). See https://github.com/pytorch/TensorRT/issues/1871#issuecomment-1543226473
+
+
+def prefix_all_nodes(graph: Graph, prefix: str) -> Graph:
+    # For details on opcodes see https://pytorch.org/docs/stable/fx.html#Node
+    for node in graph.nodes:
+        # All nodes get renamed
+        node.name = f"{prefix}_{node.name}"
+
+        # Other node attributes are handled on a per-opcode basis
+        match node.op:
+            case "placeholder":
+                node.target = node.name
+            case "get_attr" | "call_module" | "call_method":
+                # target is the name of a module attribute, which were all renamed above. Note that
+                # the convention for modules and submodules is a "." join, while the convention
+                # for nodes is a "_" join.
+                node.target = f"{prefix}.{node.target}"
+            case "call_function" | "output":
+                # If any node.args or node.kwargs are themselves references to other nodes, they
+                # will have been prefixed already, so we don't need to do anything here.
+                pass
+            case _:
+                assert_never(node.op)
+    return graph
+
+
+def get_topology_for_subset_of_layers(
+    graph: Graph, layer_names: Iterable[str]
+) -> dict[str, set[str]]:
+    """Get the topology of a subset of layers in a graph. The topology is represented as a dict
+    where the keys are the names of the layers and the values are lists of the names of the
+    layers that the key layer depends on.
+
+    Example: Given the graph A -> B -> C -> D, the topology of the subset of layers [A, C] would
+    be {"A": [], "C": ["A"]} since C depends on A.
+
+    Args:
+        graph: The graph to analyze.
+        layer_names: The names of the layers to get the topology for.
+
+    Returns:
+        A dict representing the topology of the subset of layers.
+    """
+    key_layers = set(layer_names)
+    topology = {layer: set() for layer in key_layers}
+    # depends_on_keys[node] = set of key nodes that a non-key node depends on.
+    depends_on_keys = {node.name: set() for node in graph.nodes}
+
+    # Assuming traversal is already in topological-sorted order
+    for node in graph.nodes:
+        if node.name in key_layers:
+            # 'Key' nodes are marked as dependent on themselves
+            depends_on_keys[node.name] = {node.name}
+            for parent in node.all_input_nodes:
+                topology[node.name].update(depends_on_keys.get(parent.name, set()))
+        else:
+            # All other nodes inherit dependencies from their input nodes
+            for parent in node.all_input_nodes:
+                depends_on_keys[node.name].update(depends_on_keys.get(parent.name, set()))
+
+    return topology
+
+
+##############################
+## Below are all deprecated ##
+##############################
 
 
 @deprecated("Use GraphModulePlus class instead")
@@ -158,7 +209,8 @@ def set_dict_outputs_by_name(graph: Graph, outputs: Iterable[str]) -> None:
 @deprecated("Use GraphModulePlus class instead")
 def set_inputs_and_output_by_name(graph: Graph, inputs: Iterable[str], output: str) -> None:
     """Set the inputs and output of a graph to the nodes of the given name(s)."""
-    _assert_no_common_names(inputs, [output])
+    if set(inputs) & {output}:
+        raise ValueError(f"Redundant: {set(inputs) & {output}}")
     # It's important that we do the following operations in the correct order. Setting the output
     # defines what code is 'alive' or 'dead', and removing dead code is necessary before calling
     # _set_inputs_by_name, otherwise we will get an error trying to remove the existing inputs.
@@ -179,36 +231,6 @@ def get_subgraph(graph_module: GraphModule, inputs: Iterable[str], output: str) 
     new_module.recompile()
     new_module.delete_all_unused_submodules()
     return new_module
-
-
-def _assert_no_common_names(names1: Iterable[str], names2: Iterable[str]) -> None:
-    common_names = set(names1) & set(names2)
-    if common_names:
-        raise ValueError(f"Redundant: {common_names}")
-
-
-def prefix_all_nodes(graph: Graph, prefix: str) -> Graph:
-    # For details on opcodes see https://pytorch.org/docs/stable/fx.html#Node
-    for node in graph.nodes:
-        # All nodes get renamed
-        node.name = f"{prefix}_{node.name}"
-
-        # Other node attributes are handled on a per-opcode basis
-        match node.op:
-            case "placeholder":
-                node.target = node.name
-            case "get_attr" | "call_module" | "call_method":
-                # target is the name of a module attribute, which were all renamed above. Note that
-                # the convention for modules and submodules is a "." join, while the convention
-                # for nodes is a "_" join.
-                node.target = f"{prefix}.{node.target}"
-            case "call_function" | "output":
-                # If any node.args or node.kwargs are themselves references to other nodes, they
-                # will have been prefixed already, so we don't need to do anything here.
-                pass
-            case _:
-                assert_never(node.op)
-    return graph
 
 
 @deprecated("Use GraphModulePlus.replace_head instead")
@@ -394,40 +416,3 @@ def step_through_call(graph_module: GraphModule, context={}, callback=None) -> A
                 assert_never(node.op)
         if callback is not None:
             callback(node, context[node.name])
-
-
-def get_topology_for_subset_of_layers(
-    graph: Graph, layer_names: Iterable[str]
-) -> dict[str, set[str]]:
-    """Get the topology of a subset of layers in a graph. The topology is represented as a dict
-    where the keys are the names of the layers and the values are lists of the names of the
-    layers that the key layer depends on.
-
-    Example: Given the graph A -> B -> C -> D, the topology of the subset of layers [A, C] would
-    be {"A": [], "C": ["A"]} since C depends on A.
-
-    Args:
-        graph: The graph to analyze.
-        layer_names: The names of the layers to get the topology for.
-
-    Returns:
-        A dict representing the topology of the subset of layers.
-    """
-    key_layers = set(layer_names)
-    topology = {layer: set() for layer in key_layers}
-    # depends_on_keys[node] = set of key nodes that a non-key node depends on.
-    depends_on_keys = {node.name: set() for node in graph.nodes}
-
-    # Assuming traversal is already in topological-sorted order
-    for node in graph.nodes:
-        if node.name in key_layers:
-            # 'Key' nodes are marked as dependent on themselves
-            depends_on_keys[node.name] = {node.name}
-            for parent in node.all_input_nodes:
-                topology[node.name].update(depends_on_keys.get(parent.name, set()))
-        else:
-            # All other nodes inherit dependencies from their input nodes
-            for parent in node.all_input_nodes:
-                depends_on_keys[node.name].update(depends_on_keys.get(parent.name, set()))
-
-    return topology
