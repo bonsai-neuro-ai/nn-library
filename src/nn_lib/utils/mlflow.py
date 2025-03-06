@@ -156,7 +156,7 @@ def restore_data_from_mlflow_run(run: pd.Series):
     return instantiate(model_class, init_args)
 
 
-def save_as_artifact(obj: object, path: Path, run_id: str):
+def save_as_artifact(obj: object, path: Path, run_id: Optional[str] = None):
     """Save the given object to the given path as an MLflow artifact in the given run."""
     with tempfile.TemporaryDirectory() as tmpdir:
         local_file = Path(tmpdir) / path.name
