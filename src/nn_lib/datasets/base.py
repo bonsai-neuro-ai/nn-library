@@ -56,7 +56,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
         metadata_file = os.path.join(self.data_dir, "metadata.pkl")
         if not os.path.exists(metadata_file):
             self.prepare_data()
-        return torch.load(metadata_file)
+        return torch.load(metadata_file, weights_only=False, map_location="cpu")
 
     @property
     def data_dir(self):
