@@ -10,6 +10,9 @@ class SparseAutoEncoder(LightningModule):
     def __init__(self, input_dim: int, hidden_dim: int, beta_l1: float = 0.01):
         super().__init__()
 
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+
         self.in_out_bias = nn.Parameter(torch.zeros(input_dim))
         self.encoder = nn.Linear(input_dim, hidden_dim, bias=True)
         self.decoder = nn.Linear(hidden_dim, input_dim, bias=False)
