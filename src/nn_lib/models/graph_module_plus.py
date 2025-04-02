@@ -223,6 +223,11 @@ class GraphModulePlus(GraphModule):
         # order as the input.
         return list(lookup_node_by_name.values())
 
+    def users_of(self, node: str | Node) -> list[Node]:
+        """Get the users of a node in the graph."""
+        node = self._resolve_nodes(node)[0]
+        return list(node.users)
+
     @property
     def inputs(self) -> List[Node]:
         """Get all input nodes in the graph."""
