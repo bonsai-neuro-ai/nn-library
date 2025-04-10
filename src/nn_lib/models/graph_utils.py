@@ -28,12 +28,12 @@ def prefix_all_nodes(graph: Graph, prefix: str) -> Graph:
         match node.op:
             case "placeholder":
                 node.target = node.name
-            case "get_attr" | "call_module" | "call_method":
+            case "get_attr" | "call_module":
                 # target is the name of a module attribute, which were all renamed above. Note that
                 # the convention for modules and submodules is a "." join, while the convention
                 # for nodes is a "_" join.
                 node.target = f"{prefix}.{node.target}"
-            case "call_function" | "output":
+            case "call_function" | "output" | "call_method":
                 # If any node.args or node.kwargs are themselves references to other nodes, they
                 # will have been prefixed already, so we don't need to do anything here.
                 pass

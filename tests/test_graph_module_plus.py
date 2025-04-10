@@ -6,6 +6,7 @@ from torch import nn
 from torch.fx import symbolic_trace
 from torchvision.models.resnet import resnet18, resnet34
 from nn_lib.models.graph_module_plus import GraphModulePlus
+from nn_lib.models.graph_utils import prefix_all_nodes
 from nn_lib.models.utils import frozen
 
 
@@ -19,6 +20,24 @@ class FakeStitchingLayerForTesting(nn.Module):
 
     def update_weight(self, mul):
         self.conv.weight.data *= mul
+
+
+class DummyModuleWithMethodsAndAssertions(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor):
+        # This forward() function is designed to test symbolic tracing of method calls. The first
+        # is a method call on a tensor. The second is a function call on a package.
+
+        # Call a method on a tensor
+        sz = x.dim()
+        torch._assert(sz > 0, "this should always pass")
+
+        # Call a method of torch
+        x = torch.permute(x, (1, 0))
+
+        return x
 
 
 class TestGraphModulePlus(unittest.TestCase):
@@ -177,16 +196,18 @@ class TestGraphModulePlus(unittest.TestCase):
         # Nodes downstream of the rewire in A or upstream in B should no longer exist
         with self.assertRaises(ValueError):
             merged_model._resolve_nodes("modelA_add_4")
+
+        with self.assertRaises(ValueError):
             merged_model._resolve_nodes("modelB_add_1")
 
     def test_merge_three_modules_stitching(self):
         modelA = GraphModulePlus.new_from_trace(resnet18())
         modelB = GraphModulePlus.new_from_trace(resnet34())
-        stitcher = FakeStitchingLayerForTesting(512, 128)
+        stitcher = FakeStitchingLayerForTesting(128, 128)
         merged_model = GraphModulePlus.new_from_merge(
             modules={"modelA": modelA, "stitching_layer": stitcher, "modelB": modelB},
             rewire_inputs={
-                "stitching_layer": "modelA_add_7",
+                "stitching_layer": "modelA_add_2",
                 "modelB_layer2_1_relu_1": "stitching_layer",
             },
             auto_trace=False,
@@ -199,6 +220,8 @@ class TestGraphModulePlus(unittest.TestCase):
         # Nodes downstream of the rewire in A or upstream in B should no longer exist
         with self.assertRaises(ValueError):
             merged_model._resolve_nodes("modelA_add_4")
+
+        with self.assertRaises(ValueError):
             merged_model._resolve_nodes("modelB_add_1")
 
         # We should still have access to the stitching layer's methods, and it should affect the
@@ -221,7 +244,7 @@ class TestGraphModulePlus(unittest.TestCase):
         merged_model = GraphModulePlus.new_from_merge(
             modules={"modelA": modelA, "stitching_layer": stitcher, "modelB": modelB},
             rewire_inputs={
-                "stitching_layer_conv": "modelA_add_7",
+                "stitching_layer_conv": "modelA_add_2",
                 "modelB_layer2_1_relu_1": "stitching_layer_conv",
             },
             auto_trace=True,
@@ -233,6 +256,58 @@ class TestGraphModulePlus(unittest.TestCase):
 
         with self.assertRaises(AttributeError):
             merged_model.stitching_layer.update_weight(0.5)
+
+    def test_prefix_simple(self):
+        new_graph = prefix_all_nodes(self.gm.graph, prefix="pre")
+        new_gm = GraphModulePlus(root=nn.ModuleDict({"pre": self.gm}), graph=new_graph)
+
+        self.assertTrue(hasattr(new_gm, "pre"))
+        self.assertTrue(hasattr(self.gm, "conv1"))
+        self.assertTrue(hasattr(new_gm.pre, "conv1"))
+
+        og_out = self.gm(self.dummy_input)
+        new_out = new_gm(self.dummy_input)
+        torch.testing.assert_allclose(og_out, new_out)
+
+    def test_prefix_call_module(self):
+        dummy_gm = GraphModulePlus.new_from_trace(DummyModuleWithMethodsAndAssertions())
+        new_graph = prefix_all_nodes(dummy_gm.graph, prefix="pre")
+        new_gm = GraphModulePlus(root=nn.ModuleDict({"pre": dummy_gm}), graph=new_graph)
+
+        dummy_input = torch.ones(4, 3)
+        og_out = dummy_gm(dummy_input)
+        new_out = new_gm(dummy_input)
+        torch.testing.assert_allclose(og_out, new_out)
+
+    def test_copy_is_not_deep(self):
+        param_before = next(iter(self.gm.parameters()))
+        param_before.data[:] = 1.0
+        torch.testing.assert_allclose(param_before.data, torch.ones_like(param_before.data))
+
+        gm2 = GraphModulePlus.new_from_copy(self.gm)
+        param2 = next(iter(gm2.parameters()))
+        param2.data[:] = 2.0
+
+        torch.testing.assert_allclose(param_before.data, torch.ones_like(param2.data) * 2)
+
+    def test_copy_does_not_delete(self):
+        og_num_nodes = len(list(self.gm.graph.nodes))
+        og_out = self.gm(self.dummy_input)
+        truncated_copy = GraphModulePlus.new_from_copy(self.gm).set_output("add_3")
+
+        # The copy should have fewer nodes...
+        self.assertLess(len(list(truncated_copy.graph.nodes)), og_num_nodes)
+
+        # ...but should not have modified the original
+        self.assertEqual(len(list(self.gm.graph.nodes)), og_num_nodes)
+
+        # The copy should still be able to run
+        trunc_out = truncated_copy(self.dummy_input)
+        self.assertEqual(trunc_out.ndim, 4)
+
+        # The og model should still be able to run
+        torch.testing.assert_allclose(og_out.detach(), self.gm(self.dummy_input).detach())
+
 
 
 if __name__ == "__main__":
