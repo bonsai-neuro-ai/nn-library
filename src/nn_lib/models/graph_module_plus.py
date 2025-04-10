@@ -206,6 +206,36 @@ class GraphModulePlus(GraphModule):
 
         return self
 
+    def delta_state_dict(self, base_model: nn.Module) -> dict:
+        """Get the difference between this module's state_dict and another module's state_dict.
+        The other module is treated as the 'base'.
+
+        Does not actually compute a difference in parameters, but rather the subset of parameters
+        that are unique to this model. This is useful for training parts of models and saving
+        only the unique/changed parameters.
+        """
+        unique_state_dict = {}
+        base_state_dict = base_model.state_dict()
+        for name, param in self.state_dict().items():
+            base_param = base_state_dict.get(name, torch.empty(1))
+            if not torch.equal(base_param, param):
+                unique_state_dict[name] = param
+        return unique_state_dict
+
+    def load_delta_state_dict(
+        self,
+        delta_state_dict: dict,
+        base_model: nn.Module,
+        strict: bool = True,
+        assign: bool = False,
+    ) -> Any:
+        """Inverse of delta_state_dict. Load a delta state dict into this model, using the base model
+        params where the delta state dict does not have a value.
+        """
+        state_dict = base_model.state_dict()
+        state_dict.update(delta_state_dict)
+        return self.load_state_dict(state_dict, strict=strict, assign=assign)
+
     #############################
     ## Node management helpers ##
     #############################

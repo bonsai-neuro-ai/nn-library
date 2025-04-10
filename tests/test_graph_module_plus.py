@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 from warnings import catch_warnings
 
 import torch
@@ -324,6 +325,26 @@ class TestGraphModulePlus(unittest.TestCase):
         dummy_gm(good_input)
         with self.assertRaises(RuntimeError):
             dummy_gm(bad_input)
+
+    def test_delta_state_dict(self):
+        copy_gm = deepcopy(self.gm)
+        copy_gm.layer1._modules["0"].conv1.weight.data = torch.ones_like(
+            copy_gm.layer1._modules["0"].conv1.weight
+        )
+
+        delta = copy_gm.delta_state_dict(self.gm)
+        self.assertEqual(len(delta), 1)
+
+        new_resnet = GraphModulePlus.new_from_trace(resnet18())
+        new_resnet.load_delta_state_dict(delta, self.gm)
+
+        assert torch.equal(
+            new_resnet.layer1._modules["0"].conv2.weight, self.gm.layer1._modules["0"].conv2.weight
+        )
+        assert torch.equal(
+            new_resnet.layer1._modules["0"].conv1.weight,
+            torch.ones_like(copy_gm.layer1._modules["0"].conv1.weight),
+        )
 
 
 if __name__ == "__main__":
