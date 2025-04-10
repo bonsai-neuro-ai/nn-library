@@ -25,7 +25,7 @@ class GraphModulePlus(GraphModule):
     ###############
 
     @staticmethod
-    def new_from_copy(gm: GraphModule, name: Optional[str] = None) -> "GraphModulePlus":
+    def new_from_copy(gm: GraphModule, name: Optional[str] = None) -> Self:
         """Create a new GraphModulePlus from a copy of an existing GraphModule. The root module
         will share references to the attributes of the model, but the underlying graphs will be
         independent."""
@@ -38,7 +38,7 @@ class GraphModulePlus(GraphModule):
         return GraphModulePlus(root=gm, graph=new_graph, class_name=class_name)
 
     @staticmethod
-    def new_from_trace(module: nn.Module) -> "GraphModulePlus":
+    def new_from_trace(module: nn.Module) -> Self:
         """Create a new GraphModulePlus by symbolic trace of a torch.nn.Module"""
         if isinstance(module, GraphModulePlus):
             return GraphModulePlus.new_from_copy(module)
@@ -53,7 +53,7 @@ class GraphModulePlus(GraphModule):
         modules: dict[str, nn.Module],
         rewire_inputs: dict[str, str | Iterable[str]],
         auto_trace: bool = True,
-    ) -> "GraphModulePlus":
+    ) -> Self:
         """Create a new GraphModulePlus by merging a set of modules together.
 
         :param modules: a mapping from module names to nn.Modules or GraphModules. The new
@@ -122,7 +122,7 @@ class GraphModulePlus(GraphModule):
 
     def extract_subgraph(
         self, inputs: Optional[list[str | Node]] = None, output: Optional[str | Node] = None
-    ) -> "GraphModulePlus":
+    ) -> Self:
         """Extract a subgraph by specifying the input and output nodes. Optionally leave the
         inputs and output unspecified to have them default to the inputs and output of the original
         model.
@@ -144,7 +144,7 @@ class GraphModulePlus(GraphModule):
         new_module.delete_all_unused_submodules()
         return new_module
 
-    def squash_all_conv_batchnorm_pairs(self) -> "GraphModulePlus":
+    def squash_all_conv_batchnorm_pairs(self) -> Self:
         """Squash all conv-batchnorm pairs in this model. Returns a new model with
         parameters/attributes shared with the original model *except* for the new conv layers.
         """
@@ -195,7 +195,7 @@ class GraphModulePlus(GraphModule):
 
         return new_module
 
-    def strip_all_assertions(self):
+    def strip_all_assertions(self) -> Self:
         """Remove all calls to torch._assert. This is useful for stripping a graph of its
         side-effects which would otherwise get in the way of pruning subgraphs.
         """

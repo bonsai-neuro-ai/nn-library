@@ -60,7 +60,7 @@ class RegressableLinear(nn.Linear, Regressable):
     @torch.no_grad()
     def init_by_regression(
         self, from_data: torch.Tensor, to_data: torch.Tensor, transpose: bool = False
-    ) -> "RegressableLinear":
+    ) -> Self:
         if self.bias is not None:
             # If we have a bias, we need to center the data
             mean_x = from_data.mean(0, keepdim=True)
