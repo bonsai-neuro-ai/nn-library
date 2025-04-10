@@ -32,7 +32,9 @@ class DummyModuleWithMethodsAndAssertions(nn.Module):
 
         # Call a method on a tensor
         sz = x.dim()
-        torch._assert(sz > 0, "this should always pass")
+
+        # Make a traceable assertion
+        torch._assert(sz == 2, "requires 2D tensor input")
 
         # Call a method of torch
         x = torch.permute(x, (1, 0))
@@ -308,6 +310,20 @@ class TestGraphModulePlus(unittest.TestCase):
         # The og model should still be able to run
         torch.testing.assert_allclose(og_out.detach(), self.gm(self.dummy_input).detach())
 
+    def test_strip_assertions(self):
+        good_input = torch.ones(4, 3)
+        bad_input = torch.ones(5, 4, 3)
+        dummy_gm = GraphModulePlus.new_from_trace(DummyModuleWithMethodsAndAssertions())
+
+        dummy_gm(good_input)
+        with self.assertRaises(AssertionError):
+            dummy_gm(bad_input)
+
+        dummy_gm.strip_all_assertions()
+
+        dummy_gm(good_input)
+        with self.assertRaises(RuntimeError):
+            dummy_gm(bad_input)
 
 
 if __name__ == "__main__":

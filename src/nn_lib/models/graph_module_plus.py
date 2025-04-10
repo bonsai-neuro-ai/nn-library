@@ -1,7 +1,7 @@
-import warnings
 from typing import Iterable, List, Optional, Any, assert_never, Self
 
 import pydot
+import torch
 from torch import nn
 from torch.fx import symbolic_trace, GraphModule, Graph, Node
 
@@ -194,6 +194,17 @@ class GraphModulePlus(GraphModule):
         new_module._clean_up_and_recompile()
 
         return new_module
+
+    def strip_all_assertions(self):
+        """Remove all calls to torch._assert. This is useful for stripping a graph of its
+        side-effects which would otherwise get in the way of pruning subgraphs.
+        """
+        for node in list(self.graph.nodes):
+            if node.op == "call_function" and node.target == torch._assert:
+                self.graph.erase_node(node)
+        self._clean_up_and_recompile()
+
+        return self
 
     #############################
     ## Node management helpers ##
