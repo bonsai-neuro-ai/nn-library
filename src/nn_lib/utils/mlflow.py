@@ -1,48 +1,30 @@
-import importlib
 import tempfile
+from argparse import Namespace
+from jsonargparse import Namespace as JSONNamespace
 from pathlib import Path
-from typing import Union, Optional, Iterable, assert_never, Generator
+from typing import Union, Optional, assert_never, Generator
 
-import jsonargparse
 import mlflow
 import pandas as pd
 import torch
 from mlflow.entities import Run
-from torch import nn
 
 from nn_lib.utils import iter_flatten_dict
 
 RunOrURI = Union[pd.Series, Run, str, Path]
 
 
-def restore_params_from_mlflow_run(mlflow_run: pd.Series):
-    """MLflow runs are loaded as pandas Series where the column names starting with 'params.' tell
-    us the values originally stored in MLFlowLogger.log_hyperparams(). This function recovers the
-    original dictionary of hyperparameters from the stored_params Series.
-
-    For example, if the run was created with
-
-    ```
-    mlflow.log_params({"a": 1, "b": {"c": 2, "d": 3}})
-    ```
-
-    then the stored_params Series will have columns `params.a` and `params.b.c` and `params.b.d` with
-    ```
-
-    Then the stored_params Series will have columns `params.a`, `params.b/c` and `params.b/d` with
-    values 1, 2, and 3 respectively. Given that row, this function will return the dictionary.
+def log_flattened_params(params: dict | Namespace | JSONNamespace):
+    """Log the given parameters to the current MLflow run. If the parameters are a Namespace,
+    they will be converted to a dictionary first. Nested parameters are flattened.
     """
-    params = {}
-    for col, value in mlflow_run.items():
-        if isinstance(col, str) and col.startswith("params."):
-            keys = col[len("params.") :].split("/")
-            d = params
-            for k in keys[:-1]:
-                if k not in d:
-                    d[k] = {}
-                d = d[k]
-            d[keys[-1]] = value
-    return params
+    if isinstance(params, Namespace):
+        params = vars(params)
+    elif isinstance(params, JSONNamespace):
+        params = params.to_dict()
+
+    flattened_params = dict(iter_flatten_dict(params, join_op="/".join))
+    mlflow.log_params(flattened_params)
 
 
 def search_runs_by_params(
@@ -95,74 +77,29 @@ def search_single_run_by_params(
     return df.iloc[0]
 
 
-def instantiate(model_class: str, init_args: dict) -> object:
-    """Take a string representation of a class and a dictionary of arguments and instantiate the
-    class with those arguments.
-    """
-    model_package, model_class = model_class.rsplit(".", 1)
-    cls = getattr(importlib.import_module(model_package), model_class)
-
-    parser = jsonargparse.ArgumentParser(exit_on_error=False)
-    parser.add_class_arguments(cls, nested_key="obj", instantiate=True)
-    parsed = parser.parse_object({"obj": init_args})
-    return parser.instantiate_classes(parsed).obj
-
-
-def load_checkpoint_from_mlflow_run(
-    run_or_uri: RunOrURI,
-    alias: str = "best",
-    map_location: Optional[str] = None,
-):
-    # mlflow checkpoint artifacts are stored like checkpoints/epoch-4-step=10/epoch-4-step=10.ckpt
-    # with checkpoints/epoch-4-step=10/aliases.txt containing aliases like 'best' or 'last'.
-    for file in _iter_artifacts(run_or_uri):
-        if file.name == "aliases.txt":
-            with open(file, "r") as f:
-                if f"'{alias}'" in f.read():
-                    the_checkpoint = file.parent / f"{file.parent.name}.ckpt"
-                    break
-    else:
-        raise FileNotFoundError(f"Could not find checkpoint with alias '{alias}'")
-    return torch.load(the_checkpoint, map_location=map_location)
-
-
-def restore_model_from_mlflow_run(
-    run: pd.Series,
-    load_checkpoint: bool = True,
-    device: Optional[str] = None,
-    alias: str = "best",
-    drop_keys: Optional[Iterable[str]] = None,
-):
-    params_dict = restore_params_from_mlflow_run(run)
-    model_class = params_dict["model"]["class_path"]
-    init_args = params_dict["model"]["init_args"]
-
-    model: nn.Module = instantiate(model_class, init_args)  # type: ignore
-
-    if load_checkpoint:
-        data = load_checkpoint_from_mlflow_run(run, alias=alias, map_location=device)
-        if drop_keys:
-            data["state_dict"] = {k: v for k, v in data["state_dict"].items() if k not in drop_keys}
-        model.load_state_dict(data["state_dict"])
-
-    return model
-
-
-def restore_data_from_mlflow_run(run: pd.Series):
-    params_dict = restore_params_from_mlflow_run(run)
-    model_class = params_dict["data"]["class_path"]
-    init_args = params_dict["data"]["init_args"]
-
-    return instantiate(model_class, init_args)
-
-
-def save_as_artifact(obj: object, path: Path, run_id: Optional[str] = None):
+def save_as_artifact(obj: object, path: str | Path, run_id: Optional[str] = None):
     """Save the given object to the given path as an MLflow artifact in the given run."""
+    if isinstance(path, str):
+        path = Path(path)
     with tempfile.TemporaryDirectory() as tmpdir:
         local_file = Path(tmpdir) / path.name
         remote_path = str(path.parent) if path.parent != Path() else None
         torch.save(obj, local_file)
         mlflow.log_artifact(str(local_file), artifact_path=remote_path, run_id=run_id)
+
+
+def load_artifact(path: str | Path, run_id: Optional[str] = None) -> object:
+    """Load the given artifact from the specified MLflow run. Path is relative to the artifact URI,
+    just like save_as_artifact()
+    """
+    if isinstance(path, Path):
+        path = str(path)
+    if run_id is None:
+        run_id = mlflow.active_run().info.run_id
+    # Note: despite the name, "downloading" artifacts involves no copying of files if we leave the
+    # local path unspecified and the artifacts are stored on this file system.
+    local_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path=path)
+    return torch.load(local_path)
 
 
 def _to_mlflow_uri(run_or_uri: RunOrURI) -> str:
@@ -188,14 +125,9 @@ def _iter_artifacts(run_or_uri: RunOrURI) -> Generator[Path, None, None]:
             yield from _iter_artifacts(file)
 
 
-
 __all__ = [
-    "instantiate",
-    "load_checkpoint_from_mlflow_run",
-    "restore_data_from_mlflow_run",
-    "restore_model_from_mlflow_run",
-    "restore_params_from_mlflow_run",
     "save_as_artifact",
+    "load_artifact",
     "search_runs_by_params",
     "search_single_run_by_params",
 ]
