@@ -239,7 +239,6 @@ def ntk_vjp_full(
     # Memory management heuristic: we'll divide available memory into thirds (multiplicatively).
     # One third for inner-loop, one third for m1, and one third for m2.
     mem_ceiling_items = mem_ceiling_gb / GB_PER_ITEM
-    mem_ceiling_items_partitioned = mem_ceiling_items ** (1 / 3)
     n_params = sum(p.numel() for p in weights.values())
     n_output = model_fn(weights, batch_x1[0]).numel()
 

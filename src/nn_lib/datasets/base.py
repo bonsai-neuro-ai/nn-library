@@ -122,31 +122,31 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
                 self.test_ds = self.test_data(transform=self.test_transform)
 
     def train_dataloader(self, batch_size: int = 100, num_workers: int = 4, **kwargs):
+        kwargs["pin_memory"] = kwargs.get("pin_memory", num_workers > 0)
         return DataLoader(
             self.train_ds_split,
             batch_size=batch_size,
             num_workers=num_workers,
-            pin_memory=num_workers > 0,
             generator=torch.Generator().manual_seed(self.seed),
             **kwargs,
         )
 
     def val_dataloader(self, batch_size: int = 100, num_workers: int = 4, **kwargs):
+        kwargs["pin_memory"] = kwargs.get("pin_memory", num_workers > 0)
         return DataLoader(
             self.val_ds_split,
             batch_size=batch_size,
             num_workers=num_workers,
-            pin_memory=num_workers > 0,
             generator=torch.Generator().manual_seed(self.seed),
             **kwargs,
         )
 
     def test_dataloader(self, batch_size: int = 100, num_workers: int = 4, **kwargs):
+        kwargs["pin_memory"] = kwargs.get("pin_memory", num_workers > 0)
         return DataLoader(
             self.test_ds,
             batch_size=batch_size,
             num_workers=num_workers,
-            pin_memory=num_workers > 0,
             generator=torch.Generator().manual_seed(self.seed),
             **kwargs,
         )
