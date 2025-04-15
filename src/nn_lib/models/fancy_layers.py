@@ -5,6 +5,7 @@ import torch
 from torch import nn, vmap
 from torch.nn import functional as F
 
+from nn_lib.analysis.regression import safe_linalg_lstsq
 from nn_lib.models.parametrizations import low_rank, orthogonal, scaled_orthogonal
 from nn_lib.models.utils import conv2d_shape
 
@@ -22,12 +23,9 @@ __all__ = [
 
 class Regressable(abc.ABC):
     @abc.abstractmethod
-    def init_by_regression(
-        self, from_data: torch.Tensor, to_data: torch.Tensor, transpose: bool = False
-    ) -> Self:
+    def init_by_regression(self, from_data: torch.Tensor, to_data: torch.Tensor) -> Self:
         """Initialize parameters for this layer by regressing its inputs (from_data) to its
-        outputs (to_data). If transpose is True, swaps the roles of from_data and to_data so that
-        the to_data -> from_data least squares regression is performed.
+        outputs (to_data).
         """
 
 
@@ -38,7 +36,7 @@ class RegressableLinear(nn.Linear, Regressable):
             # careful not to do self.weight = nn.Parameter(lstsq.solution.T) because that would
             # create a new nn.Parameter object, and any optimizer tracking the old one would not
             # be able to update the new one.
-            self.weight.data = new_weight
+            self.weight.data.copy_(new_weight)
         elif hasattr(self, "parametrizations") and "weight" in self.parametrizations:
             # Case 2: the weight has been parametrized, so we need to call the right_inverse
             # method of the parametrization to get the best least-squares solution. This is done
@@ -51,16 +49,14 @@ class RegressableLinear(nn.Linear, Regressable):
     def set_bias(self, new_bias: Optional[torch.Tensor]):
         if new_bias is not None and self.bias is not None:
             if isinstance(self.bias, nn.Parameter):
-                self.bias.data = new_bias
+                self.bias.data.copy_(new_bias)
             elif hasattr(self, "parametrizations") and "bias" in self.parametrizations:
                 self.bias = new_bias
             else:
                 raise RuntimeError("Unexpected type for self.bias")
 
     @torch.no_grad()
-    def init_by_regression(
-        self, from_data: torch.Tensor, to_data: torch.Tensor, transpose: bool = False
-    ) -> Self:
+    def init_by_regression(self, from_data: torch.Tensor, to_data: torch.Tensor) -> Self:
         if self.bias is not None:
             # If we have a bias, we need to center the data
             mean_x = from_data.mean(0, keepdim=True)
@@ -71,14 +67,9 @@ class RegressableLinear(nn.Linear, Regressable):
             mean_x = torch.zeros_like(from_data.mean(0))
             mean_y = torch.zeros_like(to_data.mean(0))
 
-        if transpose:
-            lstsq = torch.linalg.lstsq(to_data, from_data)
-            self.set_weight(lstsq.solution)
-            self.set_bias(mean_y - mean_x @ self.weight.T)
-        else:
-            lstsq = torch.linalg.lstsq(from_data, to_data)
-            self.set_weight(lstsq.solution.T)
-            self.set_bias(mean_y - mean_x @ self.weight.T)
+        lstsq_w = safe_linalg_lstsq(from_data, to_data)
+        self.set_weight(lstsq_w.T)
+        self.set_bias((mean_y - mean_x @ self.weight.T).squeeze())
         return self
 
 
@@ -184,9 +175,7 @@ def make_conv2d_from_linear(linear_cls: type[RegressableLinear]) -> type[Regress
             return result.reshape(batch, features, *conv2d_shape(x.shape[-2:], **self.conv_params))
 
         @torch.no_grad()
-        def init_by_regression(
-            self, from_data: torch.Tensor, to_data: torch.Tensor, transpose: bool = False
-        ) -> Self:
+        def init_by_regression(self, from_data: torch.Tensor, to_data: torch.Tensor) -> Self:
             b, c, h, w = from_data.shape
             new_h, new_w = conv2d_shape((h, w), **self.conv_params)
             assert to_data.shape[-2:] == (new_h, new_w)
@@ -197,7 +186,6 @@ def make_conv2d_from_linear(linear_cls: type[RegressableLinear]) -> type[Regress
             self.linear.init_by_regression(
                 flat_from.permute(0, 2, 1).reshape(b * new_h * new_w, -1),
                 flat_to.permute(0, 2, 1).reshape(b * new_h * new_w, -1),
-                transpose=transpose,
             )
             return self
 

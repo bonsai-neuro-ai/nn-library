@@ -22,18 +22,18 @@ class BaseTestRegressable(metaclass=ABCMeta):
     def check_constraints(self, layer, constructor_kwargs):
         pass
 
-    def assert_recovers_gt_helper(self, n_examples, in_shape, **constructor_kwargs):
-        gt_layer = self.the_class(**constructor_kwargs).eval()
+    def assert_recovers_gt_helper(self, n_examples, in_shape, device, **constructor_kwargs):
+        gt_layer = self.the_class(**constructor_kwargs).eval().to(device)
 
         # Jitter the GT parameters further
         with torch.no_grad():
             for param in gt_layer.parameters():
                 param.data += 0.1 * torch.randn_like(param)
 
-        true_x = torch.randn(n_examples, *in_shape)
-        true_y = gt_layer(true_x)
+        true_x = torch.randn(n_examples, *in_shape).to(device)
+        true_y = gt_layer(true_x).detach()
 
-        layer = self.the_class(**constructor_kwargs).eval()
+        layer = self.the_class(**constructor_kwargs).eval().to(device)
 
         # Assert *not* a match at initialization
         pred_init = layer(true_x)
@@ -44,7 +44,7 @@ class BaseTestRegressable(metaclass=ABCMeta):
         layer.init_by_regression(true_x, true_y)
 
         # Check that predictions are now the same
-        pred_y = layer(true_x)
+        pred_y = layer(true_x).detach()
         if not torch.allclose(true_y, pred_y, atol=1e-3):
             err = (true_y - pred_y).abs().max().item()
             self.fail(f"The predictions should match the GT after init_by_regression (err={err})")
@@ -115,7 +115,8 @@ class BaseTestRegressable(metaclass=ABCMeta):
         for vals in product(*self.the_kwargs.values()):
             kwargs = dict(zip(self.the_kwargs.keys(), vals))
             with self.subTest(msg=", ".join(f"{k}={v}" for k, v in kwargs.items())):
-                self.assert_recovers_gt_helper(n_examples=1000, **kwargs)
+                self.assert_recovers_gt_helper(n_examples=1000, device="cpu", **kwargs)
+                self.assert_recovers_gt_helper(n_examples=1000, device="cuda", **kwargs)
 
     def test_params_grads(self):
         for vals in product(*self.the_kwargs.values()):
