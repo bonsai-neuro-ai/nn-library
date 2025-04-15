@@ -1,10 +1,7 @@
-import importlib
-import inspect
 import itertools
 import warnings
 from typing import Optional, Callable, Generator, Tuple, Any, TypeVar, Iterable, Union
 
-import jsonargparse
 import torch
 from tqdm.auto import tqdm
 from functools import wraps
@@ -177,16 +174,3 @@ __all__ = [
     "supersedes",
     "vmap_debug",
 ]
-
-
-def instantiate(model_class: str, init_args: dict) -> object:
-    """Take a string representation of a class and a dictionary of arguments and instantiate the
-    class with those arguments.
-    """
-    model_package, model_class = model_class.rsplit(".", 1)
-    cls = getattr(importlib.import_module(model_package), model_class)
-
-    parser = jsonargparse.ArgumentParser(exit_on_error=False)
-    parser.add_class_arguments(cls, nested_key="obj", instantiate=True)
-    parsed = parser.parse_object({"obj": init_args})
-    return parser.instantiate_classes(parsed).obj

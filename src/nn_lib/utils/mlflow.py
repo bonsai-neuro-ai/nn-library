@@ -1,12 +1,12 @@
 import tempfile
 from argparse import Namespace
-from jsonargparse import Namespace as JSONNamespace
 from pathlib import Path
-from typing import Union, Optional, assert_never, Generator
+from typing import Union, Optional
 
 import mlflow
 import pandas as pd
 import torch
+from jsonargparse import Namespace as JSONNamespace
 from mlflow.entities import Run
 
 from nn_lib.utils import iter_flatten_dict
@@ -102,32 +102,10 @@ def load_artifact(path: str | Path, run_id: Optional[str] = None) -> object:
     return torch.load(local_path)
 
 
-def _to_mlflow_uri(run_or_uri: RunOrURI) -> str:
-    """Canonicalize the given run or URI to a string representation of the URI."""
-    match run_or_uri:
-        case str():
-            return run_or_uri
-        case Path():
-            return str(run_or_uri)
-        case pd.Series():
-            return run_or_uri.artifact_uri
-        case Run():
-            return run_or_uri.info.artifact_uri
-    assert_never(run_or_uri)
-
-
-def _iter_artifacts(run_or_uri: RunOrURI) -> Generator[Path, None, None]:
-    """Iterate over all files in the given MLflow run's artifact URI."""
-    for file in Path(_to_mlflow_uri(run_or_uri)).iterdir():
-        if file.is_file():
-            yield file
-        elif file.is_dir():
-            yield from _iter_artifacts(file)
-
-
 __all__ = [
-    "save_as_artifact",
     "load_artifact",
+    "log_flattened_params",
+    "save_as_artifact",
     "search_runs_by_params",
     "search_single_run_by_params",
 ]
