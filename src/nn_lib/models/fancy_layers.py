@@ -5,7 +5,7 @@ import torch
 from torch import nn, vmap
 from torch.nn import functional as F
 
-from nn_lib.analysis.regression import safe_linalg_lstsq
+from nn_lib.analysis.regression import StreamingLinearRegression, safe_regression
 from nn_lib.models.parametrizations import low_rank, orthogonal, scaled_orthogonal
 from nn_lib.models.utils import conv2d_shape
 
@@ -22,14 +22,67 @@ __all__ = [
 
 
 class Regressable(abc.ABC):
-    @abc.abstractmethod
-    def init_by_regression(self, from_data: torch.Tensor, to_data: torch.Tensor) -> Self:
+    def __init__(self, has_bias: bool):
+        self.regression_handler = None
+        self.has_bias = has_bias
+
+    @torch.no_grad()
+    def init_by_regression(
+        self,
+        from_data: torch.Tensor,
+        to_data: torch.Tensor,
+        ridge: float = 0.0,
+        batched: bool = False,
+        final_batch: bool = True,
+    ) -> Self:
         """Initialize parameters for this layer by regressing its inputs (from_data) to its
         outputs (to_data).
+
+        Args:
+            from_data: Input data to the layer.
+            to_data: Output data of the layer.
+            ridge: Ridge regression regularizer. Default 0.0 (no regularization).
+            batched: If True, use the StreamingLinearRegression class to handle large data. If
+                False, use the standard least-squares regression.
+            final_batch: if in batched mode, use this flag to indicate that this is the last batch
+                and parameters should be set. Left True by default, which will cause parameters
+                to be updated on *every* batch. Setting to False saves some calculations.
+        """
+        x, y = self._prep_regressors(from_data, to_data)
+        if batched:
+            if self.regression_handler is None:
+                self.regression_handler = StreamingLinearRegression(
+                    x.size(1), y.size(1), bias=self.has_bias, device=x.device
+                )
+            self.regression_handler.add_batch(x, y)
+            if final_batch:
+                self._set_regression_results(*self.regression_handler.solve(ridge=ridge))
+        else:
+            self._set_regression_results(*safe_regression(x, y, bias=self.has_bias, ridge=ridge))
+        return self
+
+    @abc.abstractmethod
+    def _set_regression_results(self, weight: torch.Tensor, bias: Optional[torch.Tensor]):
+        """Set the weight and bias of the layer to the given values which come from linear
+        regression on (possibly reshaped) data. This function is responsible for post-processing
+        regression results and updating this Module's parameters.
+        """
+
+    @abc.abstractmethod
+    def _prep_regressors(
+        self, from_data: torch.Tensor, to_data: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Given input and output tensors for this layer, do any necessary pre-processing to the
+        tensors to prepare them for regression. Regression expects inputs X and Y to be of shape
+        (m, n_x) and (m, n_y) respectively. This function should therefore return two 2D tensors.
         """
 
 
 class RegressableLinear(nn.Linear, Regressable):
+    def __init__(self, *args, **kwargs):
+        nn.Linear.__init__(self, *args, **kwargs)
+        Regressable.__init__(self, has_bias=self.bias is not None)
+
     def set_weight(self, new_weight: torch.Tensor):
         if isinstance(self.weight, nn.Parameter):
             # Case 1: weight is a nn.Parameter, so we can assign to it directly. But we're
@@ -56,21 +109,16 @@ class RegressableLinear(nn.Linear, Regressable):
                 raise RuntimeError("Unexpected type for self.bias")
 
     @torch.no_grad()
-    def init_by_regression(self, from_data: torch.Tensor, to_data: torch.Tensor) -> Self:
-        if self.bias is not None:
-            # If we have a bias, we need to center the data
-            mean_x = from_data.mean(0, keepdim=True)
-            mean_y = to_data.mean(0, keepdim=True)
-            from_data = from_data - mean_x
-            to_data = to_data - mean_y
-        else:
-            mean_x = torch.zeros_like(from_data.mean(0))
-            mean_y = torch.zeros_like(to_data.mean(0))
+    def _prep_regressors(
+        self, from_data: torch.Tensor, to_data: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # Nothing to do here since a linear layer already takes in 2D and outputs 2D tensors.
+        return from_data, to_data
 
-        lstsq_w = safe_linalg_lstsq(from_data, to_data)
-        self.set_weight(lstsq_w.T)
-        self.set_bias((mean_y - mean_x @ self.weight.T).squeeze())
-        return self
+    @torch.no_grad()
+    def _set_regression_results(self, weight: torch.Tensor, bias: Optional[torch.Tensor]):
+        self.set_weight(weight.T)
+        self.set_bias(bias)
 
 
 class LowRankLinear(RegressableLinear):
@@ -86,10 +134,7 @@ class LowRankLinear(RegressableLinear):
         super().__init__(in_features, out_features, bias=bias, device=device, dtype=dtype)
         low_rank(self, "weight", rank)
 
-    # Inherit init_by_regression from RegressableLinear; there, self.weight = lstsq.solution.T will
-    # hit the right_inverse method of the LowRankParametrization, which will return the truncated
-    # SVD of the weight matrix, which is indeed the best least-squares solution for the regression
-    # problem. The bias is handled in the same way as in RegressableLinear.
+    # Inherit regression handling from RegressableLinear. Nothing else to do here.
 
 
 class ProcrustesLinear(RegressableLinear):
@@ -102,7 +147,6 @@ class ProcrustesLinear(RegressableLinear):
     ):
         super().__init__(in_features, out_features, bias=bias)
         self.has_scale = scale
-        self.has_bias = bias
 
         # Inject orthogonality (orthonormal) constraint on weight into self. The orthogonal()
         # function does some meta-programming magic to modify parameters and class attributes
@@ -112,10 +156,7 @@ class ProcrustesLinear(RegressableLinear):
         else:
             orthogonal(self, "weight")
 
-    # Inherit init_by_regression from RegressableLinear; there, self.weight = lstsq.solution.T will
-    # hit the right_inverse method of the LowRankParametrization, which will return the truncated
-    # SVD of the weight matrix, which is indeed the best least-squares solution for the regression
-    # problem. The bias is handled in the same way as in RegressableLinear.
+    # Inherit regression handling from RegressableLinear. Nothing else to do here.
 
     def __repr__(self):
         if self.has_scale and self.has_bias:
@@ -144,6 +185,7 @@ def make_conv2d_from_linear(linear_cls: type[RegressableLinear]) -> type[Regress
             **kwargs,
         ):
             super().__init__()
+            Regressable.__init__(self, has_bias=kwargs.get("bias", True))
 
             self.__class__.__name__ = linear_cls.__name__.replace("Linear", "Conv2d")
 
@@ -175,7 +217,9 @@ def make_conv2d_from_linear(linear_cls: type[RegressableLinear]) -> type[Regress
             return result.reshape(batch, features, *conv2d_shape(x.shape[-2:], **self.conv_params))
 
         @torch.no_grad()
-        def init_by_regression(self, from_data: torch.Tensor, to_data: torch.Tensor) -> Self:
+        def _prep_regressors(
+            self, from_data: torch.Tensor, to_data: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
             b, c, h, w = from_data.shape
             new_h, new_w = conv2d_shape((h, w), **self.conv_params)
             assert to_data.shape[-2:] == (new_h, new_w)
@@ -183,11 +227,14 @@ def make_conv2d_from_linear(linear_cls: type[RegressableLinear]) -> type[Regress
             flat_from = F.unfold(from_data, **self.conv_params).clone()
             flat_to = to_data.reshape(b, -1, new_h * new_w)
 
-            self.linear.init_by_regression(
+            return (
                 flat_from.permute(0, 2, 1).reshape(b * new_h * new_w, -1),
                 flat_to.permute(0, 2, 1).reshape(b * new_h * new_w, -1),
             )
-            return self
+
+        @torch.no_grad()
+        def _set_regression_results(self, weight: torch.Tensor, bias: Optional[torch.Tensor]):
+            self.linear._set_regression_results(weight, bias)
 
         def to_conv2d(self) -> nn.Conv2d:
             conv2d = nn.Conv2d(

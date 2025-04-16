@@ -22,7 +22,9 @@ class BaseTestRegressable(metaclass=ABCMeta):
     def check_constraints(self, layer, constructor_kwargs):
         pass
 
-    def assert_recovers_gt_helper(self, n_examples, in_shape, device, **constructor_kwargs):
+    def assert_recovers_gt_helper(
+        self, n_examples, in_shape, device, batch_size=None, **constructor_kwargs
+    ):
         gt_layer = self.the_class(**constructor_kwargs).eval().to(device)
 
         # Jitter the GT parameters further
@@ -41,7 +43,17 @@ class BaseTestRegressable(metaclass=ABCMeta):
             self.fail("WTF? The predictions are already the same at initialization")
 
         # Initialize the layer with regression
-        layer.init_by_regression(true_x, true_y)
+        if batch_size is None:
+            layer.init_by_regression(true_x, true_y)
+        else:
+            assert n_examples % batch_size == 0
+            i_vals = list(range(0, n_examples, batch_size))
+            for i in i_vals:
+                batch_x = true_x[i : i + batch_size]
+                batch_y = true_y[i : i + batch_size]
+                layer.init_by_regression(
+                    batch_x, batch_y, batched=True, final_batch=i == i_vals[-1]
+                )
 
         # Check that predictions are now the same
         pred_y = layer(true_x).detach()
@@ -117,6 +129,12 @@ class BaseTestRegressable(metaclass=ABCMeta):
             with self.subTest(msg=", ".join(f"{k}={v}" for k, v in kwargs.items())):
                 self.assert_recovers_gt_helper(n_examples=1000, device="cpu", **kwargs)
                 self.assert_recovers_gt_helper(n_examples=1000, device="cuda", **kwargs)
+                self.assert_recovers_gt_helper(
+                    n_examples=1000, device="cpu", batch_size=50, **kwargs
+                )
+                self.assert_recovers_gt_helper(
+                    n_examples=1000, device="cuda", batch_size=50, **kwargs
+                )
 
     def test_params_grads(self):
         for vals in product(*self.the_kwargs.values()):
