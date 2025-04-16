@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.fx import symbolic_trace
 from torchvision.models.resnet import resnet18, resnet34
+
 from nn_lib.models.graph_module_plus import GraphModulePlus
 from nn_lib.models.graph_utils import prefix_all_nodes
 from nn_lib.models.utils import frozen
@@ -81,7 +82,7 @@ class TestGraphModulePlus(unittest.TestCase):
         self.assertEqual(len(inputs), 1)
         self.assertEqual(inputs[0].name, "maxpool")
         new_output = self.gm(og_rep)
-        torch.testing.assert_allclose(og_output, new_output)
+        torch.testing.assert_close(og_output, new_output)
 
     def test_set_output(self):
         og_result = self._get_dummy_rep("layer1_1_relu")
@@ -94,7 +95,7 @@ class TestGraphModulePlus(unittest.TestCase):
         self.assertLess(num_nodes_after, num_nodes_before)
 
         new_result = self.gm(self.dummy_input)
-        torch.testing.assert_allclose(og_result, new_result)
+        torch.testing.assert_close(og_result, new_result)
 
     def test_set_dict_outputs(self):
         self.gm.set_dict_outputs(outputs=["add_1", "add_2", "add_3"])
@@ -206,12 +207,13 @@ class TestGraphModulePlus(unittest.TestCase):
     def test_merge_three_modules_stitching(self):
         modelA = GraphModulePlus.new_from_trace(resnet18())
         modelB = GraphModulePlus.new_from_trace(resnet34())
+        targetB = modelB.insert_noop("add_3")
         stitcher = FakeStitchingLayerForTesting(128, 128)
         merged_model = GraphModulePlus.new_from_merge(
             modules={"modelA": modelA, "stitching_layer": stitcher, "modelB": modelB},
             rewire_inputs={
                 "stitching_layer": "modelA_add_2",
-                "modelB_layer2_1_relu_1": "stitching_layer",
+                f"modelB_{targetB}": "stitching_layer",
             },
             auto_trace=False,
         )
@@ -270,7 +272,7 @@ class TestGraphModulePlus(unittest.TestCase):
 
         og_out = self.gm(self.dummy_input)
         new_out = new_gm(self.dummy_input)
-        torch.testing.assert_allclose(og_out, new_out)
+        torch.testing.assert_close(og_out, new_out)
 
     def test_prefix_call_module(self):
         dummy_gm = GraphModulePlus.new_from_trace(DummyModuleWithMethodsAndAssertions())
@@ -280,18 +282,18 @@ class TestGraphModulePlus(unittest.TestCase):
         dummy_input = torch.ones(4, 3)
         og_out = dummy_gm(dummy_input)
         new_out = new_gm(dummy_input)
-        torch.testing.assert_allclose(og_out, new_out)
+        torch.testing.assert_close(og_out, new_out)
 
     def test_copy_is_not_deep(self):
         param_before = next(iter(self.gm.parameters()))
         param_before.data[:] = 1.0
-        torch.testing.assert_allclose(param_before.data, torch.ones_like(param_before.data))
+        torch.testing.assert_close(param_before.data, torch.ones_like(param_before.data))
 
         gm2 = GraphModulePlus.new_from_copy(self.gm)
         param2 = next(iter(gm2.parameters()))
         param2.data[:] = 2.0
 
-        torch.testing.assert_allclose(param_before.data, torch.ones_like(param2.data) * 2)
+        torch.testing.assert_close(param_before.data, torch.ones_like(param2.data) * 2)
 
     def test_copy_does_not_delete(self):
         og_num_nodes = len(list(self.gm.graph.nodes))
@@ -309,9 +311,9 @@ class TestGraphModulePlus(unittest.TestCase):
         self.assertEqual(trunc_out.ndim, 4)
 
         # The og model should still be able to run
-        torch.testing.assert_allclose(og_out.detach(), self.gm(self.dummy_input).detach())
+        torch.testing.assert_close(og_out.detach(), self.gm(self.dummy_input).detach())
 
-    def test_strip_assertions(self):
+    def test_strip_assert(self):
         good_input = torch.ones(4, 3)
         bad_input = torch.ones(5, 4, 3)
         dummy_gm = GraphModulePlus.new_from_trace(DummyModuleWithMethodsAndAssertions())
@@ -320,7 +322,7 @@ class TestGraphModulePlus(unittest.TestCase):
         with self.assertRaises(AssertionError):
             dummy_gm(bad_input)
 
-        dummy_gm.strip_all_assertions()
+        dummy_gm.strip_all_where(lambda node: node.is_impure and "assert" in node.name)
 
         dummy_gm(good_input)
         with self.assertRaises(RuntimeError):
@@ -345,6 +347,18 @@ class TestGraphModulePlus(unittest.TestCase):
             new_resnet.layer1._modules["0"].conv1.weight,
             torch.ones_like(copy_gm.layer1._modules["0"].conv1.weight),
         )
+
+    def test_insert_noop(self):
+        num_nodes1 = len(list(self.gm.graph.nodes))
+        out1 = self.gm(self.dummy_input)
+        noop_node = self.gm.insert_noop("add_4")
+        num_nodes2 = len(list(self.gm.graph.nodes))
+        out2 = self.gm(self.dummy_input)
+        torch.testing.assert_close(out1, out2)
+        self.assertEqual(num_nodes1 + 1, num_nodes2)
+        self.assertIn(noop_node, self.gm.graph.nodes)
+        self.assertEqual(noop_node.args[0].name, "add_4")
+        self.assertGreater(len(list(noop_node.users)), 0)
 
 
 if __name__ == "__main__":

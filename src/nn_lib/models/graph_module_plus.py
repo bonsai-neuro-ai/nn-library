@@ -1,4 +1,4 @@
-from typing import Iterable, List, Optional, Any, assert_never, Self
+from typing import Iterable, List, Optional, Any, assert_never, Self, Callable
 
 import pydot
 import torch
@@ -195,12 +195,13 @@ class GraphModulePlus(GraphModule):
 
         return new_module
 
-    def strip_all_assertions(self) -> Self:
-        """Remove all calls to torch._assert. This is useful for stripping a graph of its
-        side-effects which would otherwise get in the way of pruning subgraphs.
+    def strip_all_where(self, condition_fn: Callable[[Node], bool]) -> Self:
+        """Attempt to remove any nodes in the graph matching a condition. This just calls
+        graph.erase_node() for all nodes matching the condition. If those nodes cannot be safely
+        removed, graph.erase_node() will throw an error.
         """
-        for node in list(self.graph.nodes):
-            if node.op == "call_function" and node.target == torch._assert:
+        for node in list(reversed(self.graph.nodes)):
+            if condition_fn(node):
                 self.graph.erase_node(node)
         self._clean_up_and_recompile()
 
@@ -268,6 +269,22 @@ class GraphModulePlus(GraphModule):
         """Get the users of a node in the graph."""
         node = self._resolve_nodes(node)[0]
         return list(node.users)
+
+    def insert_noop(self, node: str | Node) -> Node:
+        """Insert a no-op (Identity) node in between the given node and its downstream users.
+        """
+        to_replace = self._resolve_nodes(node)[0]
+        if "noop" not in self._modules:
+            self.add_submodule("noop", torch.nn.Identity())
+        with self.graph.inserting_after(to_replace):
+            noop = self.graph.call_module("noop", args=(to_replace,))
+            # Replace the original node with the noop node. (Tricky note: this also makes the noop
+            # take itself as input because it is a user of the original node. This will be fixed
+            # in a moment.)
+            to_replace.replace_all_uses_with(noop)
+            # Now we need to fix the noop node's args. It should take the original node as input.
+            noop.replace_input_with(noop.args[0], to_replace)
+        return noop
 
     @property
     def inputs(self) -> List[Node]:
