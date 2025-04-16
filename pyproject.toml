@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 
@@ -8,7 +8,7 @@ name = "bonsai-nn-library"
 description = "Common PyTorch utilities for research projects on neural networks."
 readme = "README.md"
 requires-python = ">= 3.10"
-version = "0.4.2"
+version = "0.4.3"
 license = { text = "MIT" }
 authors = [
     { name = "Richard Lange", email = "opensource@bonsai-neuro-ai.com" },
@@ -44,7 +44,7 @@ dependencies = [
 
 
 [project.urls]
-"Homepage" = "https://github.com/bonsai-neuro-ai/nn-library"
+Repository = "https://github.com/bonsai-neuro-ai/nn-library"
 
 
 
