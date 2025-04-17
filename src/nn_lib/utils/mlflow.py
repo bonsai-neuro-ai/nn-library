@@ -6,7 +6,7 @@ from typing import Union, Optional
 import mlflow
 import pandas as pd
 import torch
-from jsonargparse import Namespace as JSONNamespace
+from jsonargparse import Namespace as JSONNamespace, strip_meta
 from mlflow.entities import Run
 
 from nn_lib.utils import iter_flatten_dict
@@ -18,10 +18,10 @@ def log_flattened_params(params: dict | Namespace | JSONNamespace):
     """Log the given parameters to the current MLflow run. If the parameters are a Namespace,
     they will be converted to a dictionary first. Nested parameters are flattened.
     """
-    if isinstance(params, Namespace):
+    if isinstance(params, JSONNamespace):
+        params = strip_meta(params).to_dict()
+    elif isinstance(params, Namespace):
         params = vars(params)
-    elif isinstance(params, JSONNamespace):
-        params = params.to_dict()
 
     flattened_params = dict(iter_flatten_dict(params, join_op="/".join))
     mlflow.log_params(flattened_params)
