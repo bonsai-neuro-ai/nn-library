@@ -15,11 +15,13 @@ from nn_lib.models import (
     Interpolate2d,
     conv2d_shape_inverse,
 )
+from nn_lib.optim import LRFinder
+from nn_lib.optim.lr_finder import UnstableLREstimate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Define the dataset, pointing root_dir to the location on the server where we keep shared datasets
-data_module = ImageNetDataModule(root_dir="/data/datasets/", batch_size=100, num_workers=10)
+data_module = ImageNetDataModule(root_dir="/data/datasets/")
 # DataModule is a concept from pytorch lightning. For performance reasons, data modules are lazy
 # and wait to load the data until we actually ask for it. We need to tell the data module to
 # actually run its setup routines. There's room for API improvement here, especially the unexpected
@@ -59,9 +61,7 @@ display_model_graph(modelB)
 # Create a hybrid stitched model.
 layerA = "add_3"
 layerB = "add_5"
-layerB_next = modelB._resolve_nodes(layerB)[0].users
-layerB_next = next(iter(layerB_next)).name
-print("After", layerB, "comes", layerB_next)
+layerB_noop = modelB.insert_noop(layerB)
 
 # Step (1): Get 'subgraph' models which go input -> desired layer. Then, look at the output shape
 # of these sub-models to determine the shape of the tensors at the desired layers. Note: if the two
@@ -95,7 +95,7 @@ modelAB = (
         modules={"modelA": modelA, "stitching_layer": stitching_layer, "modelB": modelB},
         rewire_inputs={
             "stitching_layer": "modelA_" + layerA,
-            "modelB_" + layerB_next: "stitching_layer",
+            f"modelB_{layerB_noop}": "stitching_layer",
         },
         auto_trace=False,
     )
@@ -107,10 +107,13 @@ modelAB = (
 display_model_graph(modelAB)
 
 # Sanity-check that we can run all 3 models
-data_loader = data_module.test_dataloader()
+data_loader = data_module.test_dataloader(batch_size=100, num_workers=4)
 images, labels = next(iter(data_loader))
 images, labels = images.to(device), labels.to(device)
 print(f"Sanity-checking on a single test batch containing {len(images)} images")
+modelA = modelA.to(device)
+modelB = modelB.to(device)
+modelAB = modelAB.to(device)
 
 
 def quick_run_and_check(model, images, labels, name):
@@ -131,12 +134,23 @@ paramsA = {k: v.clone() for k, v in modelA.named_parameters()}
 paramsB = {k: v.clone() for k, v in modelB.named_parameters()}
 paramsAB = {k: v.clone() for k, v in modelAB.named_parameters()}
 
+data_module.setup("fit")
+train_dataloader = data_module.train_dataloader()
+
 # Now that we have a functioning stitched model, let's update the stitching layer. First way to do
 # this is with the regression-based method. Note that this will in general be better if we use a
 # bigger batch.
 print("=== DOING REGRESSION INIT ===")
-regression_from = modelAB.stitching_layer[0](embedding_getterA(images))
-modelAB.stitching_layer[1].init_by_regression(regression_from, embedding_getterB(images))
+num_regression_batches = 10
+for b, (images, labels) in enumerate(data_loader):
+    images, labels = images.to(device), labels.to(device)
+    regression_from = modelAB.stitching_layer[0](embedding_getterA(images))
+    regression_to = embedding_getterB(images)
+    modelAB.stitching_layer[1].init_by_regression(
+        regression_from, regression_to, batched=True, final_batch=b == num_regression_batches - 1
+    )
+    if b == num_regression_batches - 1:
+        break
 
 # Assert that no parameters changed *except* for stitched_model.stitching_layer
 for k, v in modelA.named_parameters():
@@ -149,6 +163,9 @@ for k, v in modelAB.named_parameters():
     else:
         assert torch.allclose(v, paramsAB[k])
 
+# Take a new parameter shapshot since some changed
+paramsAB = {k: v.clone() for k, v in modelAB.named_parameters()}
+
 # Re-run and see if it's improved
 quick_run_and_check(modelA, images, labels, "ModelA")
 quick_run_and_check(modelB, images, labels, "ModelB")
@@ -160,13 +177,30 @@ quick_run_and_check(modelAB, images, labels, "ModelAB")
 # this: (1) we can freeze modelA while training stitched_model, and the parameters of modelA will not be
 # updated; (2) if we update the parameters of stitched_model, the parameters of modelA and modelB will
 # also be updated. We need to always be careful to make copies of models if we want to avoid this.
-data_module.setup("fit")
-train_dataloader = data_module.train_dataloader()
+
+# Before training, try to discover the optimal learning rate
+modelAB.stitching_layer.train()
+tmp_optimizer = torch.optim.Adam(modelAB.stitching_layer.parameters(), lr=1e-8)
+lr_finder = LRFinder(modelAB, tmp_optimizer, criterion=nn.CrossEntropyLoss(), device=device)
+lr_finder.range_test(train_dataloader, 1e-8, 0.1, num_iter=100, step_mode="exp")
+try:
+    lr = lr_finder.suggestion()
+except UnstableLREstimate:
+    lr = 1e-4
+del tmp_optimizer
+optimizer = torch.optim.Adam(modelAB.stitching_layer.parameters(), lr=lr)
+
+# Assert that no parameters changed during LR optimization
+for k, v in modelA.named_parameters():
+    assert torch.allclose(v, paramsA[k])
+for k, v in modelB.named_parameters():
+    assert torch.allclose(v, paramsB[k])
+for k, v in modelAB.named_parameters():
+    assert torch.allclose(v, paramsAB[k])
+
 history = []
 # To train stitching layer AND downstream model, just remove 'modelB' from the list of frozen models
 with nn_lib.models.utils.frozen(modelA, modelB):
-    modelAB.stitching_layer.train()
-    optimizer = torch.optim.Adam(modelAB.parameters(), lr=0.001)
     # Train for 100 steps or 1 epoch, whichever comes first
     for step, (im, la) in tqdm(
         enumerate(train_dataloader), total=100, desc="Train Stitching Layer"
