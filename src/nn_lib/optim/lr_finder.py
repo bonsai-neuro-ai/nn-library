@@ -76,6 +76,7 @@ class LRFinder:
         step_mode: str = "exp",
         diverge_th: float = 5.0,
         accumulation_steps: int = 1,
+        callback: Optional[Callable[[int, float, float], None]] = None,
     ) -> Self:
         """Train the model with increasing learning rates while tracking the loss.
 
@@ -87,6 +88,7 @@ class LRFinder:
             step_mode: 'exp' for exponential increase or 'linear' for linear increase
             diverge_th: Divergence threshold - stop if loss exceeds best loss by this amount
             accumulation_steps: Number of steps for gradient accumulation
+            callback: Optional callback function taking (itr, lr, loss) as arguments
         """
         # Reset learning rate history and model/optimizer states
         self.mode = step_mode
@@ -143,6 +145,10 @@ class LRFinder:
                 self.history["lr"].append(lr)
                 loss_item = loss.item()
                 self.history["loss"].append(loss_item)
+
+                # Call the optional callback
+                if callback:
+                    callback(iter_count, lr, loss_item)
 
                 # Check for divergence
                 if iter_count > 0 and self.best_loss is not None:
@@ -268,7 +274,7 @@ class LRFinder:
         # Suggest the LR at the steepest point
         return lrs[steepest_idx].item()
 
-    def set_lr(self, lr: float) -> None:
+    def set_lr(self, lr: float) -> Self:
         """Set the learning rate for the optimizer.
 
         Args:
@@ -276,3 +282,4 @@ class LRFinder:
         """
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
+        return self

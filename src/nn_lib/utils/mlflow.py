@@ -19,7 +19,7 @@ def log_flattened_params(params: dict | Namespace | JSONNamespace):
     they will be converted to a dictionary first. Nested parameters are flattened.
     """
     if isinstance(params, JSONNamespace):
-        params = strip_meta(params).to_dict()
+        params = strip_meta(params).as_dict()
     elif isinstance(params, Namespace):
         params = vars(params)
 
