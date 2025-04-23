@@ -1,10 +1,10 @@
 import itertools
 import warnings
-from typing import Optional, Callable, Generator, Tuple, Any, TypeVar, Iterable, Union
+from functools import wraps
+from typing import Callable, Generator, TypeVar
 
 import torch
 from tqdm.auto import tqdm
-from functools import wraps
 
 try:
     from warnings import deprecated
@@ -22,9 +22,6 @@ except ImportError:
         return decorator
 
 
-T = TypeVar("T")
-K = TypeVar("K")
-J = TypeVar("J")
 # It's understood but not enforced that ChildType is a subclass of ParentType
 ParentType = TypeVar("ParentType")
 ChildType = TypeVar("ChildType")
@@ -85,43 +82,6 @@ def supersedes(parent_class: ParentType) -> Callable[[ChildType], ChildType]:
     return decorator
 
 
-def iter_flatten_dict(
-    d: dict[K, Any],
-    join_op: Callable[[tuple[K, ...]], J],
-    prefix: Tuple[K, ...] = tuple(),
-    skip_keys: Optional[Union[Iterable[K], dict[K, Any]]] = None,
-) -> Generator[Tuple[J, Any], None, None]:
-    """Iterate a nested dict in order, yielding (k1k2k3, v) from a dict like {k1: {k2: {k3: v}}}.
-    Uses the given join_op to join keys together. In this example, join_op(k1, k2, k3) should
-    return k1k2k3
-    """
-    skip_keys = skip_keys or {}
-    for k, v in d.items():
-        if k in skip_keys and not isinstance(skip_keys, dict):
-            continue
-        new_prefix = prefix + (k,)
-        if type(v) is dict:
-            yield from iter_flatten_dict(
-                v, join_op, new_prefix, skip_keys[k] if k in skip_keys else None
-            )
-        else:
-            joined_key = join_op(new_prefix)
-            yield joined_key, v
-
-
-def flatten_dict(
-    d: dict[K, Any],
-    join_op: Callable[[tuple[K, ...]], J],
-    prefix: Tuple[K, ...] = tuple(),
-    skip_keys: Optional[Union[Iterable[K], dict[K, Any]]] = None,
-) -> dict[J, Any]:
-    """Flatten a nested dict in order, yielding {k1k2k3: v} from a dict like {k1: {k2: {k3: v}}}.
-    Uses the given join_op to join keys together. In this example, join_op(k1, k2, k3) should
-    return k1k2k3
-    """
-    return dict(iter_flatten_dict(d, join_op, prefix, skip_keys))
-
-
 def vmap_debug(fn, in_axes=None, out_axes=None, progbar: bool = False) -> Callable:
     """Debugging version of torch.func.vmap that does things in an explicit python loop"""
 
@@ -169,8 +129,6 @@ def vmap_debug(fn, in_axes=None, out_axes=None, progbar: bool = False) -> Callab
 
 __all__ = [
     "deprecated",
-    "flatten_dict",
-    "iter_flatten_dict",
     "supersedes",
     "vmap_debug",
 ]

@@ -1,50 +1,43 @@
 import tempfile
-from argparse import Namespace
 from pathlib import Path
 from typing import Union, Optional
 
 import mlflow
 import pandas as pd
 import torch
-from jsonargparse import Namespace as JSONNamespace, strip_meta
 from mlflow.entities import Run
 
-from nn_lib.utils import iter_flatten_dict
+from .cli import ParamsLike, NestedKey, flatten_params
 
 RunOrURI = Union[pd.Series, Run, str, Path]
 
 
-def log_flattened_params(params: dict | Namespace | JSONNamespace):
+def log_flattened_params(params: ParamsLike, ignore: NestedKey = None):
     """Log the given parameters to the current MLflow run. If the parameters are a Namespace,
     they will be converted to a dictionary first. Nested parameters are flattened.
     """
-    if isinstance(params, JSONNamespace):
-        params = strip_meta(params).as_dict()
-    elif isinstance(params, Namespace):
-        params = vars(params)
-
-    flattened_params = dict(iter_flatten_dict(params, join_op="/".join))
-    mlflow.log_params(flattened_params)
+    mlflow.log_params(flatten_params(params, ignore=ignore))
 
 
 def search_runs_by_params(
     experiment_name: str,
-    params: Optional[dict] = None,
-    tags: Optional[dict] = None,
+    params: Optional[ParamsLike] = None,
+    tags: Optional[ParamsLike] = None,
     tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
-    skip_fields: Optional[dict] = None,
+    ignore: NestedKey = None,
 ) -> pd.DataFrame:
     """Query the MLflow server for runs in the specified experiment that match the given
-    parameters. Any keys of the `meta_fields` dictionary will be excluded from the search."""
+    parameters (which will be flattened if they aren't already). Keys in `ignore` will be ignored.
+    """
     query_parts = []
     if params is not None:
-        flattened_params = dict(iter_flatten_dict(params, join_op="/".join, skip_keys=skip_fields))
+        flattened_params = flatten_params(params, ignore)
         query_parts.extend(
             [f"params.`{k}` = '{v}'" for k, v in flattened_params.items() if v is not None]
         )
     if tags is not None:
-        flattened_tags = dict(iter_flatten_dict(tags, join_op="/".join, skip_keys=skip_fields))
+        flattened_tags = flatten_params(tags, ignore)
         query_parts.extend(
             [f"tags.`{k}` = '{v}'" for k, v in flattened_tags.items() if v is not None]
         )
@@ -62,14 +55,12 @@ def search_single_run_by_params(
     tags: Optional[dict] = None,
     tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
-    skip_fields: Optional[dict] = None,
+    ignore: NestedKey = None,
 ) -> pd.Series:
     """Query the MLflow server for runs in the specified experiment that match the given parameters.
     If exactly one run is found, return it. If no runs or multiple runs are found, raise an error.
     """
-    df = search_runs_by_params(
-        experiment_name, params, tags, tracking_uri, finished_only, skip_fields
-    )
+    df = search_runs_by_params(experiment_name, params, tags, tracking_uri, finished_only, ignore)
     if len(df) == 0:
         raise ValueError("No runs found with the specified parameters")
     elif len(df) > 1:
