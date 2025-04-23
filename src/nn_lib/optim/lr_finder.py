@@ -4,7 +4,7 @@ from typing import Optional, Callable, Self
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from scipy.interpolate import make_smoothing_spline
+from sklearn.isotonic import IsotonicRegression
 from torch.utils.data import DataLoader
 
 
@@ -53,6 +53,7 @@ class LRFinder:
     def get_smooth_loss(self):
         losses = np.array(self.history["loss"])
         lrs = np.array(self.history["lr"])
+
         if self.mode == "linear":
             x_axis = lrs
         elif self.mode == "exp":
@@ -60,7 +61,32 @@ class LRFinder:
         else:
             raise ValueError(f"Step mode '{self.mode}' is not recognized.")
 
-        return make_smoothing_spline(x_axis, losses)(x_axis)
+        idx_min = np.argmin(losses)
+        # Assume that the loss vs time curve is monotonically decreasing left of the min and
+        # monotonically increasing right of the min
+        decreasing_part = IsotonicRegression(increasing=False).fit(
+            x_axis[:idx_min], losses[:idx_min]
+        )
+        increasing_part = IsotonicRegression(increasing=True).fit(
+            x_axis[idx_min:], losses[idx_min:]
+        )
+
+        # Call it bitonic because it is a concatenation of two monotonic functions. This gives a
+        # 'clean' signal to work from but generally still requires some smoothing to get rid of
+        # sharp transitions
+        bitonic_loss = np.concatenate(
+            [
+                decreasing_part.predict(x_axis[:idx_min]),
+                increasing_part.predict(x_axis[idx_min:]),
+            ]
+        )
+
+        # Smooth the bitonic loss.
+        smoothed_loss = np.convolve(
+            np.pad(bitonic_loss, ((2, 2),), mode="edge"), np.ones(5) / 5, mode="valid"
+        )
+
+        return smoothed_loss
 
     def restore_state(self) -> Self:
         self.model.load_state_dict(self.model_state)
@@ -247,7 +273,8 @@ class LRFinder:
         smooth_loss = self.get_smooth_loss()
 
         # Compute rate of change, ignoring lr units (exp or linear)
-        deriv_loss = np.diff(smooth_loss)
+        deriv_loss = smooth_loss[2:] - smooth_loss[:-2]  # Central difference
+        lrs = lrs[1:-1]  # Remove first and last element to match the size of deriv_loss
 
         # Find the learning rate with the steepest negative gradient
         steepest_idx = np.argmin(deriv_loss[skip_start:-skip_end]) + skip_start
@@ -270,6 +297,15 @@ class LRFinder:
             # Check that the curve diverges at the end as expected
             if not np.mean(deriv_loss[-10:]) > 0:
                 raise UnstableLREstimate("The loss vs LR curve did not diverge for large LRs")
+
+            # Test that the minimum loss is a few standard deviations away from the lowest-lr losses
+            mu = smooth_loss[skip_start]
+            sigma = np.std(losses - smooth_loss)
+            if losses[lowest_idx] > mu - 2 * sigma:
+                raise UnstableLREstimate(
+                    "The loss vs LR curve did not have a clear minimum "
+                    "away from background noise."
+                )
 
         # Suggest the LR at the steepest point
         return lrs[steepest_idx].item()
