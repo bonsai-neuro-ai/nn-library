@@ -1,6 +1,6 @@
 import tempfile
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union, Optional, Any
 
 import mlflow
 import pandas as pd
@@ -30,16 +30,37 @@ def search_runs_by_params(
     """Query the MLflow server for runs in the specified experiment that match the given
     parameters (which will be flattened if they aren't already). Keys in `ignore` will be ignored.
     """
+
+    def _quote_value(val: Any):
+        val = str(val)
+        has_single_quote = "'" in val
+        has_double_quote = '"' in val
+        if has_single_quote and has_double_quote:
+            # Todo: figure out how to escape characters in values. MLFlow docs seem to imply it
+            #  should be supported, but I can't get it to work.
+            raise ValueError(
+                "Parameter value containing both single and double quotes will be a problem "
+                "for MLFlow filter strings"
+            )
+        if has_single_quote:
+            return f'"{val}"'
+        else:
+            return f"'{val}'"
+
     query_parts = []
     if params is not None:
         flattened_params = flatten_params(params, ignore)
         query_parts.extend(
-            [f"params.`{k}` = '{v}'" for k, v in flattened_params.items() if v is not None]
+            [
+                f"params.`{k}` = {_quote_value(v)}"
+                for k, v in flattened_params.items()
+                if v is not None
+            ]
         )
     if tags is not None:
         flattened_tags = flatten_params(tags, ignore)
         query_parts.extend(
-            [f"tags.`{k}` = '{v}'" for k, v in flattened_tags.items() if v is not None]
+            [f"tags.`{k}` = {_quote_value(v)}" for k, v in flattened_tags.items() if v is not None]
         )
     if finished_only:
         query_parts.append("status = 'FINISHED'")
@@ -51,7 +72,7 @@ def search_runs_by_params(
 
 def search_single_run_by_params(
     experiment_name: str,
-    params: Optional[dict] = None,
+    params: Optional[ParamsLike] = None,
     tags: Optional[dict] = None,
     tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
