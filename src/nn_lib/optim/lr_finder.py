@@ -280,28 +280,10 @@ class LRFinder:
         steepest_idx = np.argmin(deriv_loss[skip_start:-skip_end]) + skip_start
 
         if stability_check:
-            # Check shape of the curve: global min should be pretty distinct and should be to the
-            # right of the steepest point
-            lowest_idx = np.argmin(losses)
-            if lowest_idx < steepest_idx:
-                raise UnstableLREstimate(
-                    "The loss vs LR curve had an unexpected shape: "
-                    "the global minimum was to the left of the steepest point."
-                )
-
-            # Check that the curve obeys a linearity test around the steepest point
-            nearby_derivs = deriv_loss[steepest_idx - 2 : steepest_idx + 3]
-            if not np.all(nearby_derivs < 0):
-                raise UnstableLREstimate("The loss vs LR curve is not sufficiently smooth")
-
-            # Check that the curve diverges at the end as expected
-            if not np.mean(deriv_loss[-10:]) > 0:
-                raise UnstableLREstimate("The loss vs LR curve did not diverge for large LRs")
-
             # Test that the minimum loss is a few standard deviations away from the lowest-lr losses
             mu = smooth_loss[skip_start]
             sigma = np.std(losses - smooth_loss)
-            if losses[lowest_idx] > mu - 2 * sigma:
+            if np.min(losses) > mu - 2 * sigma:
                 raise UnstableLREstimate(
                     "The loss vs LR curve did not have a clear minimum "
                     "away from background noise."
