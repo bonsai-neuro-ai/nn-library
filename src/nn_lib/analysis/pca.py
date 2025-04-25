@@ -39,6 +39,32 @@ class PrincipalComponents(object):
         self._count_m1 = torch.zeros(1, device=device)
         self._count_m2 = torch.zeros(1, device=device)
 
+    def state_dict(self) -> dict:
+        """Get a dict representation of the object for serialization"""
+        return {
+            "dim": self.dim,
+            "moment1": self.moment1,
+            "moment2": self.moment2,
+            "center": self._center,
+            "count_m1": self._count_m1,
+            "count_m2": self._count_m2,
+        }
+
+    @staticmethod
+    def load_state_dict(state: dict) -> "PrincipalComponents":
+        """Create a new PrincipalComponents object from a state dict."""
+        obj = PrincipalComponents(
+            dim=state["dim"],
+            center=state["center"],
+            device=state["moment1"].device,
+            dtype=state["moment1"].dtype,
+        )
+        obj.moment1 = state["moment1"].clone()
+        obj.moment2 = state["moment2"].clone()
+        obj._count_m1 = state["count_m1"].clone()
+        obj._count_m2 = state["count_m2"].clone()
+        return obj
+
     def add_batch_vectors(self, vectors) -> Self:
         # Update running estimate of moment1
         is_valid = ~torch.isnan(vectors)
@@ -68,10 +94,7 @@ class PrincipalComponents(object):
 
     @property
     def cov(self):
-        if self._center:
-            return self.moment2 - self.moment1[:, None] * self.moment1[None, :]
-        else:
-            return self.moment2
+        return self.moment2 - self.mean[:, None] * self.mean[None, :]
 
     def _check_no_missing_moments(self, enforce_nonzero_only: bool = False):
         # Start with the strict test that there is >0 data for every feature and every pair of
@@ -159,6 +182,24 @@ class PrincipalComponents(object):
         else:
             return z
 
+    def suggest_dimensions(self, frac_variance: float) -> int:
+        """Suggest the number of dimensions to retain to explain a given fraction of variance."""
+        if not (0 < frac_variance <= 1):
+            raise ValueError("percent_variance must be between 0.0 and 1.0")
+        _, eigs = self.spectral_decomposition()
+        total_variance = torch.sum(eigs)
+        cumulative_variance = torch.cumsum(eigs, dim=0)
+        num_dims = torch.searchsorted(cumulative_variance, frac_variance * total_variance)
+        return num_dims.item() + 1  # Convert to 1-based indexing
+
+    def reconstruct(self, low_d_vecs: torch.Tensor) -> torch.Tensor:
+        """Reconstruct high-dimensional data from its low-dimensional representation."""
+        _, k = low_d_vecs.shape
+        if k > self.dim:
+            raise ValueError("k cannot be greater than the original dimensionality.")
+        u, _ = self.spectral_decomposition()
+        return low_d_vecs @ u[:, :k].T + self.mean[None, :]
+
     def reduce_dim(self, vecs: torch.Tensor, k: int, original_space: bool = False):
         """Reduce the dimensionality of vecs to k dimensions using the first k principal components
         of this object.
@@ -177,9 +218,9 @@ class PrincipalComponents(object):
             )
         self._check_no_missing_moments()
         u, _ = self.spectral_decomposition()
-        projection = vecs @ u[:, :k]
+        projection = (vecs - self.mean[None, :]) @ u[:, :k]
         if original_space:
-            return projection @ u[:, :k].T
+            return projection @ u[:, :k].T + self.mean[None, :]
         else:
             return projection
 
