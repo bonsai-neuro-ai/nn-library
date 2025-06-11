@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 
+import numpy as np
 import torch
 
 from nn_lib.analysis.pca import PrincipalComponents
@@ -55,6 +56,19 @@ class TestPrincipalComponents(unittest.TestCase):
             pcs2.add_batch_vectors(self.data[i : i + 10])
         torch.testing.assert_close(pcs1.mean, pcs2.mean)
         torch.testing.assert_close(pcs1.cov, pcs2.cov)
+
+    def test_devices(self):
+        pcs_cpu = PrincipalComponents.from_data(self.data, center=True)
+        pcs_gpu = PrincipalComponents.from_data(self.data.to("cuda:0"), center=True)
+
+        self.assertEqual(pcs_cpu.cov.device, torch.device("cpu"))
+        self.assertEqual(pcs_gpu.cov.device, torch.device("cuda:0"))
+
+        pcs2cpu = pcs_gpu.to("cpu")
+        pcs2gpu = pcs_cpu.to("cuda:0")
+
+        self.assertEqual(pcs2cpu.cov.device, torch.device("cpu"))
+        self.assertEqual(pcs2gpu.cov.device, torch.device("cuda:0"))
 
     def test_save_load(self):
         pcs = PrincipalComponents.from_data(self.data, center=True)
@@ -163,6 +177,18 @@ class TestPrincipalComponents(unittest.TestCase):
         pcs2 = PrincipalComponents.from_data(self.data * 2, center=True)
         similarity = pcs1.subspace_similarity(pcs2)
         torch.testing.assert_allclose(similarity, 1.0)
+
+    def test_subspace_similarity_null(self):
+        pcs1 = PrincipalComponents.from_data(self.data, center=True)
+        pcs2 = PrincipalComponents.from_data(torch.randn_like(self.data), center=True)
+        null_similarities = pcs1.subspace_similarity_null(pcs2, n_samples=1000)
+        mu, sigma = pcs1.subspace_similarity_null_normal(pcs2)
+        avg_null = np.mean(null_similarities)
+        std_null = np.std(null_similarities)
+        mcse_null = std_null / np.sqrt(1000)
+        self.assertGreater(avg_null + 3 * mcse_null, mu)
+        self.assertLess(avg_null - 3 * mcse_null, mu)
+        self.assertAlmostEqual(sigma, std_null, places=3)
 
     def test_effective_dim(self):
         pcs = PrincipalComponents.from_data(self.data, center=True)

@@ -2,6 +2,7 @@ import warnings
 from typing import Self, assert_never, Literal
 
 import torch
+from tqdm.auto import trange
 
 
 class PrincipalComponents(object):
@@ -38,6 +39,19 @@ class PrincipalComponents(object):
         # moment2, rather than just tracking the total number of samples.
         self._count_m1 = torch.zeros(1, device=device)
         self._count_m2 = torch.zeros(1, device=device)
+
+    def to(self, device: str | torch.device) -> Self:
+        """Move the object to a different device."""
+        self.moment1 = self.moment1.to(device)
+        self.moment2 = self.moment2.to(device)
+        self._count_m1 = self._count_m1.to(device)
+        self._count_m2 = self._count_m2.to(device)
+        if self._svd_cache is not None:
+            self._svd_cache = (
+                self._svd_cache[0].to(device),
+                self._svd_cache[1].to(device),
+            )
+        return self
 
     def state_dict(self) -> dict:
         """Get a dict representation of the object for serialization"""
@@ -255,18 +269,33 @@ class PrincipalComponents(object):
 
         return torch.clip(torch.sum(mat_a * mat_b), -1, 1)
 
-    def subspace_similarity_null(self, other: "PrincipalComponents", n_samples: int = 1000):
+    def subspace_similarity_null(
+        self, other: "PrincipalComponents", n_samples: int = 1000, progbar: bool = False
+    ):
         if self._center != other._center:
             warnings.warn("Subspaces have different centering; results may not be meaningful.")
         self._check_no_missing_moments(enforce_nonzero_only=True)
 
         mat_a, mat_b = self._normalized_cov(), other._normalized_cov()
 
-        def sample_sim(a, b):
-            q, _ = torch.linalg.qr(torch.randn_like(b))
-            return torch.sum(a * (q @ b @ q.T)).item()
+        # When randomly rotating the matrices, only the eigenvalues end up mattering. This lets
+        # us replace the sum of matrix products with a sum of matrix-vector products, which is
+        # faster.
+        eigs_a, eigs_b = torch.linalg.eigvalsh(mat_a), torch.linalg.eigvalsh(mat_b)
 
-        return [sample_sim(mat_a, mat_b) for _ in range(n_samples)]
+        def sample_sim(e_a, e_b):
+            q, _ = torch.linalg.qr(
+                torch.randn(self.dim, self.dim, device=mat_a.device, dtype=mat_a.dtype)
+            )
+            # We need to calculate trace(diag(e_a) @ q @ diag(e_b) @ q.T), but more
+            # efficiently. Left-multiplying by a diagonal matrix is equivalent to scaling the
+            # rows of the matrix, so diag(e_a) @ q is more efficiently done as (e_a[:,
+            # None]*q) and (diag(e_b) @ q.T).T is (e_b[None,:]*q). Then, use the fact that
+            # trace(A @ B) = sum(A.T * B), so we get the following quick calculation:
+            return torch.sum((e_a[:, None] * q) * (e_b[None, :] * q))
+
+        iterator = trange(n_samples, desc="Sampling null", disable=not progbar, leave=False)
+        return [sample_sim(eigs_a, eigs_b) for _ in iterator]
 
     def subspace_similarity_null_normal(self, other: "PrincipalComponents"):
         if self._center != other._center:
@@ -277,11 +306,18 @@ class PrincipalComponents(object):
 
         eigs_a, eigs_b = torch.linalg.eigvalsh(mat_a), torch.linalg.eigvalsh(mat_b)
 
-        mean = torch.sum(eigs_a) * torch.sum(eigs_b) / self.dim
-        approx_variance = (
-            torch.sum(eigs_a**2) * torch.sum(eigs_b**2) * 2 / (self.dim + 1) / self.dim
-        )
-        stdev = torch.sqrt(approx_variance)
+        d = self.dim
+        trace_a, trace_b = torch.sum(eigs_a), torch.sum(eigs_b)
+        sq_trace_a, sq_trace_b = trace_a**2, trace_b**2
+        trace_sq_a, trace_sq_b = torch.sum(eigs_a**2), torch.sum(eigs_b**2)
+        mean = trace_a * trace_b / d
+        moment2 = (
+            (d + 1) * sq_trace_a * sq_trace_b
+            - 2 * sq_trace_a * trace_sq_b
+            - 2 * trace_sq_a * sq_trace_b
+        ) / (d * (d - 1) * (d + 2)) + 2 * trace_sq_a * trace_sq_b / ((d - 1) * (d + 2))
+        variance = moment2 - mean**2
+        stdev = torch.sqrt(variance)
         return mean.item(), stdev.item()
 
     def effective_dim(self, method="n2"):
