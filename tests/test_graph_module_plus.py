@@ -1,15 +1,39 @@
 import unittest
 from copy import deepcopy
+from typing import Mapping
 from warnings import catch_warnings
 
 import torch
-from torch import nn
+from torch import nn, fx
 from torch.fx import symbolic_trace
 from torchvision.models.resnet import resnet18, resnet34
 
 from nn_lib.models.graph_module_plus import GraphModulePlus
 from nn_lib.models.graph_utils import prefix_all_nodes
 from nn_lib.models.utils import frozen
+
+
+class ModuleTestCase(unittest.TestCase):
+    def assertModulesEqual(self, modA: nn.Module, modB: nn.Module):
+        """Helper function to assert that two modules are identical."""
+        self.assertSequenceEqual(
+            [k for k, _ in modA.named_parameters()],
+            [k for k, _ in modB.named_parameters()],
+        )
+        self.assertSequenceEqual(
+            [k for k, _ in modA.named_modules()],
+            [k for k, _ in modB.named_modules()],
+        )
+
+        stateA = modA.state_dict()
+        stateB = modB.state_dict()
+        for keyA, paramA in stateA.items():
+            self.assertIn(keyA, stateB, f"Key {keyA} not found in stateB")
+            paramB = stateB[keyA]
+            self.assertTrue(
+                torch.equal(paramA, paramB),
+                f"Parameters for key {keyA} are not equal",
+            )
 
 
 class FakeStitchingLayerForTesting(nn.Module):
@@ -44,7 +68,7 @@ class DummyModuleWithMethodsAndAssertions(nn.Module):
         return x
 
 
-class TestGraphModulePlus(unittest.TestCase):
+class TestGraphModulePlus(ModuleTestCase):
 
     def setUp(self):
         # Setup code to initialize a GraphModulePlus instance and any necessary nodes
@@ -180,6 +204,45 @@ class TestGraphModulePlus(unittest.TestCase):
                 f"Expected {k} to be updated",
             )
 
+    def test_merge_graphmodules_leaves_originals_unchanged(self):
+        """Merging to create a new GraphModulePlus should not modify the original models. Since
+        new_from_merge contains cases for model type, this test isolates the case where the models
+        are themselves instances of GraphModulePlus.
+        """
+        modelA = GraphModulePlus.new_from_trace(resnet18())
+        modelB = GraphModulePlus.new_from_trace(resnet34())
+
+        # Make a deepcopy snapshot of all the attrs of modelA and modelB so we can assert later
+        # that merging did not modify the original models
+        modelA_copy, modelB_copy = deepcopy(modelA), deepcopy(modelB)
+
+        _ = GraphModulePlus.new_from_merge(
+            modules={"modelA": modelA, "modelB": modelB},
+            rewire_inputs={"modelB_layer2_1_relu_1": "modelA_add_3"},
+            auto_trace=True,
+        )
+
+        self.assertModulesEqual(modelA_copy, modelA)
+        self.assertModulesEqual(modelB_copy, modelB)
+
+    def test_merge_modules_leaves_originals_unchanged(self):
+        """Same as the previous test, but now with tracing some standard nn.Module models."""
+        modelA = resnet18()
+        modelB = resnet34()
+
+        # Make a deepcopy snapshot of all the attrs of modelA and modelB so we can assert later
+        # that merging did not modify the original models
+        modelA_copy, modelB_copy = deepcopy(modelA), deepcopy(modelB)
+
+        _ = GraphModulePlus.new_from_merge(
+            modules={"modelA": modelA, "modelB": modelB},
+            rewire_inputs={"modelB_layer2_1_relu_1": "modelA_add_3"},
+            auto_trace=True,
+        )
+
+        self.assertModulesEqual(modelA_copy, modelA)
+        self.assertModulesEqual(modelB_copy, modelB)
+
     def test_merge_two_modules_auto_trace(self):
         modelA, modelB = resnet18(), resnet34()
         merged_model = GraphModulePlus.new_from_merge(
@@ -261,6 +324,17 @@ class TestGraphModulePlus(unittest.TestCase):
 
         with self.assertRaises(AttributeError):
             merged_model.stitching_layer.update_weight(0.5)
+
+    def test_prefix_leaves_original_unchanged(self):
+        """Assert that prefix_all_nodes treats its inputs as immutable."""
+        my_gm = GraphModulePlus.new_from_trace(resnet18())
+        gm_nodes_before = set(map(str, my_gm.graph.nodes))
+        new_graph = prefix_all_nodes(my_gm.graph, prefix="pre")
+        new_nodes_after = set(map(str, new_graph.nodes))
+        gm_nodes_after = set(map(str, my_gm.graph.nodes))
+
+        self.assertNotEqual(gm_nodes_before, new_nodes_after, "Node names should all be different")
+        self.assertEqual(gm_nodes_before, gm_nodes_after, "Original graph should not be modified")
 
     def test_prefix_simple(self):
         new_graph = prefix_all_nodes(self.gm.graph, prefix="pre")

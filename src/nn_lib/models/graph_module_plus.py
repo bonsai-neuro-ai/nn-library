@@ -271,8 +271,7 @@ class GraphModulePlus(GraphModule):
         return list(node.users)
 
     def insert_noop(self, node: str | Node) -> Node:
-        """Insert a no-op (Identity) node in between the given node and its downstream users.
-        """
+        """Insert a no-op (Identity) node in between the given node and its downstream users."""
         to_replace = self._resolve_nodes(node)[0]
         if "noop" not in self._modules:
             self.add_submodule("noop", torch.nn.Identity())
@@ -307,7 +306,9 @@ class GraphModulePlus(GraphModule):
 
     @property
     def output_value(self) -> Node:
-        """Get the Node which is returned by the graph."""
+        """Get the Node which is returned by the graph, which is distinct from the output node.
+        The output node is a pointer to what we call the output_value node.
+        """
         return self.output.args[0]
 
     def _update_all_inplace_ops(self, inplace: bool = False) -> Self:
