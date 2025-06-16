@@ -18,28 +18,105 @@ __all__ = [
 #  dependent loop). See https://github.com/pytorch/TensorRT/issues/1871#issuecomment-1543226473
 
 
-def prefix_all_nodes(graph: Graph, prefix: str) -> Graph:
-    # For details on opcodes see https://pytorch.org/docs/stable/fx.html#Node
-    for node in graph.nodes:
-        # All nodes get renamed
-        node.name = f"{prefix}_{node.name}"
+def prefix_all_nodes(graph: Graph, prefix: str, val_map: Optional[dict] = None) -> Graph:
+    """Prefix all nodes in a graph with a given prefix, returning a new graph and leaving the
+    original graph unchanged. This is useful for moving attributes in a root module into a
+    submodule. For example, if the root module has an attribute "foo" and we want to move it into
+    a submodule "bar", we can call new_graph = prefix_all_nodes(graph, "bar") to rename the nodes
+    in the graph to "bar_foo". The caller must then reassign the graph to the submodule "bar" and
+    put the new graph in place.
 
-        # Other node attributes are handled on a per-opcode basis
-        match node.op:
-            case "placeholder":
-                node.target = node.name
-            case "get_attr" | "call_module":
-                # target is the name of a module attribute, which were all renamed above. Note that
-                # the convention for modules and submodules is a "." join, while the convention
-                # for nodes is a "_" join.
-                node.target = f"{prefix}.{node.target}"
-            case "call_function" | "output" | "call_method":
-                # If any node.args or node.kwargs are themselves references to other nodes, they
-                # will have been prefixed already, so we don't need to do anything here.
-                pass
-            case _:
-                assert_never(node.op)
-    return graph
+    Example:
+
+        original_module = symbolic_trace(some_nn_module)
+        new_module = GraphModule(
+            root=nn.ModuleDict({"bar": original_module}),
+            graph=prefix_all_nodes(original_module.graph, "bar"),
+            class_name="BarModule",
+        )
+
+    This is used by @GraphModulePlus.new_from_merge to combine multiple graphs into a single
+    graph while avoiding name collisions.
+    """
+
+    # Step 1: Create a new Graph object and copy the original graph into it (no renaming yet). So
+    # far, we're just ensuring that the original graph is not modified.
+    new_graph = Graph()
+    val_map_original_to_copy = {}
+    og_output = new_graph.graph_copy(graph, val_map_original_to_copy)
+
+    if val_map is None:
+        val_map = {}
+
+    # Create a reverse mapping from new nodes back to original nodes. There are three sets of nodes
+    # to think about: (1) the nodes of the graph passed in, (2) the copies of those nodes, and (3)
+    # the new nodes created in the loop below. val_map currently holds (1)->(2). We want to return
+    # a mapping like (1)->(3) for the caller. To do this, it will be helpful to iterate over (2) and
+    # use the val_map_copy_to_original to lookup the original (1) nodes.
+    val_map_copy_to_original = {v: k for k, v in val_map_original_to_copy.items()}
+
+    # Step 2: working *backwards* through the graph (because for each node we call
+    # replace_all_uses_with, which only looks at nodes that come *after* the current node,
+    # so for # each node update we need all downstream nodes to have already been updated),
+    # we rename each node and its target attribute. Details are handled on a per-opcode basis.
+    for node in reversed(new_graph.nodes):
+        # All nodes get renamed using the torch.fx convention where submodule attributes are joined
+        # by a "_" character. For example if there is some my_module.my_submodule.thing, the node
+        # name is conventionally "my_submodule_thing".
+        new_name = f"{prefix}_{node.name}"
+
+        # Unlike names, *targets* are more like python attributes, so nested access is done by
+        # joining with a "." character, like "my_submodule.thing".
+        new_dot_target = f"{prefix}.{node.target}" if node.target else None
+
+        # Get this node's type expression if it has one.
+        type_expr = getattr(node, "type", None)
+
+        with new_graph.inserting_after(node):
+            # For details on opcodes see https://pytorch.org/docs/stable/fx.html#Node
+            match node.op:
+                case "placeholder":
+                    new_node = new_graph.placeholder(
+                        new_name,
+                        type_expr=type_expr,
+                        default_value=node.args[0] if node.args else None,
+                    )
+                case "get_attr":
+                    new_node = new_graph.get_attr(new_dot_target, type_expr=type_expr)
+                case "call_module":
+                    new_node = new_graph.call_module(
+                        new_dot_target, args=node.args, kwargs=node.kwargs, type_expr=type_expr
+                    )
+                case "call_function":
+                    new_node = new_graph.call_function(
+                        node.target, args=node.args, kwargs=node.kwargs, type_expr=type_expr
+                    )
+                case "call_method":
+                    new_node = new_graph.call_method(
+                        node.target, args=node.args, kwargs=node.kwargs, type_expr=type_expr
+                    )
+                case "output":
+                    # We shouldn't reach here because graph_copy() earlier doesn't copy output nodes
+                    raise RuntimeError(
+                        "Output nodes should not be copied by graph_copy(). If you see this error, "
+                        "please report it as a bug."
+                    )
+                case _:
+                    assert_never(node.op)
+
+        # We now have a 'new_node' to write into the new graph. To ensure that this updates all
+        # args and kwargs of other nodes, we use the `replace_all_uses_with` method. We also
+        # update the value map for the caller.
+        new_node.name = new_name
+        node.replace_all_uses_with(new_node)
+        new_graph.erase_node(node)
+        val_map[val_map_copy_to_original[node]] = new_node
+
+    # Set the output of the new graph (if the original graph had one)
+    if og_output is not None:
+        new_graph.output(val_map[val_map_copy_to_original[og_output]])
+
+    return new_graph
 
 
 def get_topology_for_subset_of_layers(
