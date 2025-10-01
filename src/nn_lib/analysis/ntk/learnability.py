@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from nn_lib.analysis.ntk import ntk_task
 
@@ -36,6 +37,7 @@ def estimate_model_task_alignment(
     loss_fn: nn.Module,
     data: DataLoader,
     device: str | torch.device = "cpu",
+    progbar: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Estimate the learnability (rate of loss improvement) of a model on a dataset using NTK.
     This is a local linear approximation to loss over time:
@@ -66,7 +68,11 @@ def estimate_model_task_alignment(
     alignment_moment2 = torch.zeros(1, device=device)
     total_pairs = torch.zeros(1, device=device)
 
-    for (i, x_i, y_i), (j, x_j, y_j) in pairs_of_batches(data, include_ii=True, device=device):
+    itr = pairs_of_batches(data, include_ii=True, device=device)
+    if progbar:
+        itr = tqdm(itr, total=len(data) * (len(data) + 1) // 2, desc="Task-Model Alignment")
+
+    for (i, x_i, y_i), (j, x_j, y_j) in itr:
         # Calculate losses only on the diagonal (i==j) batches so we hit them once each
         if i == j:
             with torch.no_grad():
