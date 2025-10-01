@@ -1,4 +1,5 @@
 import logging
+from functools import partial
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -34,14 +35,15 @@ model = nn.Sequential(
     nn.ReLU(),
     nn.Linear(64, 10),
 )
-lin_model = linearize_model(model)
 
 
-def do_a_bit_of_training(mdl, dat, epochs, lr, dev):
+def do_a_bit_of_training(mdl, dat, epochs, lr, dev, epoch_start_callback=None):
     mdl = mdl.to(dev).train()
     optim = torch.optim.SGD(mdl.parameters(), lr=lr)
     history = []
-    for _ in trange(epochs, desc="Training Epochs"):
+    for epoch in trange(epochs, desc="Training Epochs"):
+        if epoch_start_callback is not None:
+            epoch_start_callback(epoch, mdl, optim)
         for x, y in dat:
             optim.zero_grad()
             x, y = x.to(device), y.to(device)
@@ -52,14 +54,41 @@ def do_a_bit_of_training(mdl, dat, epochs, lr, dev):
     return history
 
 
-learn_rate = 1e-2
+def snapshot_callback(lst, epoch, mdl, optim):
+    lst.append({k: v.cpu().clone() for k, v in mdl.state_dict().items()})
 
-logging.disable(logging.WARNING)
-loss, loss_err, slope, slope_err = estimate_model_task_alignment(
-    model=model.to(device), loss_fn=loss_fn, data=data_val, device=device, progbar=True
+
+learn_rate = 1e-2
+state_dict_snapshots = []
+model_history = do_a_bit_of_training(
+    model,
+    data_train,
+    epochs=5,
+    lr=learn_rate,
+    dev=device,
+    epoch_start_callback=partial(snapshot_callback, state_dict_snapshots),
 )
-model_history = do_a_bit_of_training(model, data_train, epochs=5, lr=learn_rate, dev=device)
-lin_history = do_a_bit_of_training(lin_model, data_train, epochs=5, lr=learn_rate, dev=device)
+
+# Rewind to the start of each epoch and calculate what the loss curve *would have been* either by
+# linearizing the model or by using the NTK learnability estimate.
+learnability_results_by_snapshot = []
+linearized_results_by_snapshot = []
+for epoch, state in enumerate(state_dict_snapshots):
+    # Restore state to earlier in training
+    model.load_state_dict(state)
+
+    # Do Loss Tangent estimate
+    logging.disable(logging.WARNING)  # Suppress some of the logging output
+    learnability_results_by_snapshot.append(
+        estimate_model_task_alignment(model, loss_fn, data_val, device, progbar=True)
+    )
+
+    # Do linearized model training
+    lin_model_at_snapshot = linearize_model(model)
+    linearized_results_by_snapshot.append(
+        do_a_bit_of_training(lin_model_at_snapshot, data_train, epochs=1, lr=learn_rate, dev=device)
+    )
+
 
 # %% Plot results
 
@@ -76,21 +105,35 @@ def plot_bowtie_linear_model(
     return ax
 
 
+steps_per_epoch = len(data_train)
+
 plt.figure(figsize=(8, 5))
-plt.plot(model_history, label="Full model")
-plt.plot(lin_history, label="Linearized model")
-plot_bowtie_linear_model(
-    xvals=np.linspace(0, len(model_history) / 2, 100),
-    x0=0,
-    y0=loss.item(),
-    y_err=loss_err.item(),
-    slope=-slope.item() * learn_rate,
-    slope_err=slope_err.item() * learn_rate,
-    label="Loss Tangent",
-    color="C2",
-)
+plt.plot(model_history, label="Full model", linewidth=2)
+yl = plt.ylim()
+for epoch in range(len(linearized_results_by_snapshot)):
+    x_epoch = epoch * steps_per_epoch + np.arange(steps_per_epoch)
+    plt.plot(
+        x_epoch,
+        linearized_results_by_snapshot[epoch],
+        label="Linearized model" if epoch == 0 else None,
+        color="C1",
+    )
+
+    loss, loss_err, slope, slope_err = learnability_results_by_snapshot[epoch]
+    plot_bowtie_linear_model(
+        xvals=x_epoch,
+        x0=epoch * steps_per_epoch,
+        y0=loss.item(),
+        y_err=loss_err.item(),
+        slope=-slope.item() * learn_rate,
+        slope_err=slope_err.item() * learn_rate,
+        label="Loss Tangent" if epoch == 0 else None,
+        color="C2",
+    )
 plt.xlabel("Training Step")
 plt.ylabel("Cross-Entropy Loss")
 plt.title("Training the Full and Linearized Models")
 plt.legend()
+plt.ylim(yl)
+plt.tight_layout()
 plt.show()
