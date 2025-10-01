@@ -53,6 +53,15 @@ def _memory_partition_helper(
 
 
 def _create_functional_model_as_fn_of_params(model: nn.Module):
+    # Refuse to functionalize models that use other buffers like batchnorm running stats. It's
+    # not at all obvious how to handle those correctly, and any choice we make here could be
+    # surprising to users.
+    if any(True for _ in model.buffers()):
+        raise ValueError(
+            "Cannot do NTK on models that use buffers. If your model has batchnorm, for "
+            "instance, then it must be frozen or squashed prior to calling any NTK utilities."
+        )
+
     params_copy = {name: param.detach() for name, param in model.named_parameters()}
 
     def _single_forward(params_, x_):
@@ -64,6 +73,15 @@ def _create_functional_model_as_fn_of_params(model: nn.Module):
 def _create_functional_loss_as_fn_of_params(
     model: nn.Module, loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 ):
+    # Refuse to functionalize models that use other buffers like batchnorm running stats. It's
+    # not at all obvious how to handle those correctly, and any choice we make here could be
+    # surprising to users.
+    if any(True for _ in model.buffers()):
+        raise ValueError(
+            "Cannot do NTK on models that use buffers. If your model has batchnorm, for "
+            "instance, then it must be frozen or squashed prior to calling any NTK utilities."
+        )
+
     params_copy = {name: param.detach() for name, param in model.named_parameters()}
 
     def _single_forward(params_, x_, y_):

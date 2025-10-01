@@ -145,6 +145,13 @@ class TestGraphModulePlus(ModuleTestCase):
         self.assertEqual(num_nodes_before, num_nodes_after)
         self.assertTrue(torch.allclose(dummy_output_before, dummy_output_after))
 
+    def test_buffers(self):
+        gm_buffers = dict(self.gm.named_buffers())
+        og_buffers = dict(self.reference_module.named_buffers())
+        self.assertEqual(set(gm_buffers.keys()), set(og_buffers.keys()))
+        for k in gm_buffers:
+            self.assertTrue(torch.equal(gm_buffers[k], og_buffers[k]), f"Buffer {k} differs")
+
     def test_squash_conv_bn(self):
         self.gm.eval()
         output_before = self.gm(self.dummy_input)

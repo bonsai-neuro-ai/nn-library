@@ -5,6 +5,7 @@ from torch import nn
 from torch.fx import symbolic_trace
 
 from nn_lib.analysis.ntk import ntk_task, ntk_in_memory, ntk_vjp
+from nn_lib.models import GraphModulePlus
 from nn_lib.models.graph_utils import update_all_inplace_ops
 
 
@@ -17,14 +18,21 @@ class TestNTK(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # Create a small model for testing
-        cls.model = nn.Sequential(
-            nn.Linear(cls.I, cls.H),
-            nn.ReLU(),
-            nn.Linear(cls.H, cls.O),
-        ).eval()
+        # Create a small model for testing. Include a variety of layer types deliberately.
+        cls.model_bn = GraphModulePlus.new_from_trace(
+            nn.Sequential(
+                nn.Conv2d(cls.I, cls.H, kernel_size=3, padding=1),
+                nn.BatchNorm2d(cls.H),
+                nn.ReLU(),
+                nn.Flatten(),
+                nn.Linear(cls.H * 100, cls.H),
+                nn.ReLU(),
+                nn.Linear(cls.H, cls.O),
+            )
+        )
+        cls.model = GraphModulePlus.new_from_copy(cls.model_bn).squash_all_conv_batchnorm_pairs()
         cls.loss_fn = nn.CrossEntropyLoss()
-        cls.x = torch.randn(cls.M, cls.I)
+        cls.x = torch.randn(cls.M, cls.I, 10, 10)
         cls.y = torch.randint(0, cls.O, (cls.M,))
         cls.devices = ["cpu"] if not torch.cuda.is_available() else ["cpu", "cuda:0"]
 
@@ -32,6 +40,11 @@ class TestNTK(unittest.TestCase):
         self.model = self.model.to(device)
         self.x = self.x.to(device)
         self.y = self.y.to(device)
+
+    def test_bn_is_unsupported(self):
+        with self.assertRaises(ValueError):
+            ntk_in_memory(self.model_bn, self.x)
+
 
     def test_ntk_in_memory_matches_ntk_vjp(self):
         for device in self.devices:
@@ -75,14 +88,18 @@ class TestNTKWithInplaceOps(TestNTK):
         # test a specific bug where the first layer of the model is in-pace, which caused a bug in
         # the NTK calculation.*
         super().setUpClass()
-        cls.model = symbolic_trace(
+        cls.model_bn = GraphModulePlus.new_from_trace(
             nn.Sequential(
-                nn.ReLU(inplace=True),  # This one causes issues
-                nn.Linear(cls.I, cls.H),
-                nn.ReLU(inplace=True),  # This one is just included for good measure
+                nn.Conv2d(cls.I, cls.H, kernel_size=3, padding=1),
+                nn.BatchNorm2d(cls.H),
+                nn.ReLU(inplace=True),
+                nn.Flatten(),
+                nn.Linear(cls.H * 100, cls.H),
+                nn.ReLU(inplace=True),
                 nn.Linear(cls.H, cls.O),
             )
         ).eval()
+        cls.model = GraphModulePlus.new_from_copy(cls.model_bn).squash_all_conv_batchnorm_pairs()
 
         # The bugfix:
-        cls.model = update_all_inplace_ops(cls.model, inplace=False)
+        cls.model._update_all_inplace_ops()
