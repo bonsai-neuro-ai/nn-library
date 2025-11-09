@@ -128,6 +128,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             batch_size=batch_size,
             num_workers=num_workers,
             generator=torch.Generator().manual_seed(self.seed),
+            shuffle=kwargs.pop("shuffle", self.seed is not None),
             **kwargs,
         )
 
@@ -138,6 +139,7 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             batch_size=batch_size,
             num_workers=num_workers,
             generator=torch.Generator().manual_seed(self.seed),
+            shuffle=kwargs.pop("shuffle", self.seed is not None),
             **kwargs,
         )
 
@@ -148,5 +150,6 @@ class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
             batch_size=batch_size,
             num_workers=num_workers,
             generator=torch.Generator().manual_seed(self.seed),
+            shuffle=kwargs.pop("shuffle", self.seed is not None),
             **kwargs,
         )
