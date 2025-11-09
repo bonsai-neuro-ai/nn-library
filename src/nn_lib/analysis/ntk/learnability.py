@@ -1,5 +1,6 @@
 import warnings
 from functools import wraps
+from typing import Optional
 
 import numpy as np
 import torch
@@ -10,7 +11,12 @@ from tqdm import tqdm
 from nn_lib.analysis.ntk import ntk_task
 
 
-def pairs_of_batches(dataloader: DataLoader, include_ii=False, device: str | torch.device = "cpu"):
+def pairs_of_batches(
+    dataloader: DataLoader,
+    include_ii=False,
+    device: str | torch.device = "cpu",
+    max_batches: Optional[int] = None,
+):
     """Yield all unique pairs of batches from a dataloader.
 
     Usage:
@@ -21,10 +27,14 @@ def pairs_of_batches(dataloader: DataLoader, include_ii=False, device: str | tor
     will be included.
     """
     for i, batch_i in enumerate(dataloader):
+        if max_batches is not None and i >= max_batches:
+            break
         # Moving data to device here results in fewer total copies than moving inside the inner loop
         # or letting the caller do device management.
         batch_i = tuple(x.to(device) for x in batch_i)
         for j, batch_j in enumerate(dataloader):
+            if max_batches is not None and j >= max_batches:
+                break
             if j > i:
                 break
             if include_ii or j < i:
@@ -38,6 +48,7 @@ def estimate_model_task_alignment(
     data: DataLoader,
     device: str | torch.device = "cpu",
     progbar: bool = False,
+    max_batches: Optional[int] = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Estimate the learnability (rate of loss improvement) of a model on a dataset using NTK.
     This is a local linear approximation to loss over time:
@@ -51,6 +62,8 @@ def estimate_model_task_alignment(
     :argument loss_fn: A PyTorch loss function. Must have reduction='none'.
     :argument data: A PyTorch DataLoader providing the dataset to evaluate on.
     :argument device: The torch device to use for computation.
+    :argument progbar: If true, show a progress bar.
+    :argument max_batches: The maximum number of batches to evaluate on.
     :returns tuple:
         - current estimate of the loss, i.e. Loss(t)
         - Monte Carlo Standard Error of the loss estimate
@@ -68,9 +81,10 @@ def estimate_model_task_alignment(
     alignment_moment2 = torch.zeros(1, device=device)
     total_pairs = torch.zeros(1, device=device)
 
-    itr = pairs_of_batches(data, include_ii=True, device=device)
+    n_batches = max_batches if max_batches is not None else len(data)
+    itr = pairs_of_batches(data, include_ii=True, device=device, max_batches=max_batches)
     if progbar:
-        itr = tqdm(itr, total=len(data) * (len(data) + 1) // 2, desc="Task-Model Alignment")
+        itr = tqdm(itr, total=n_batches * (n_batches + 1) // 2, desc="Task-Model Alignment")
 
     for (i, x_i, y_i), (j, x_j, y_j) in itr:
         # Calculate losses only on the diagonal (i==j) batches so we hit them once each

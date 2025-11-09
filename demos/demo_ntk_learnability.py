@@ -80,8 +80,13 @@ for epoch, state in enumerate(state_dict_snapshots):
     # Do Loss Tangent estimate
     logging.disable(logging.WARNING)  # Suppress some of the logging output
     learnability_results_by_snapshot.append(
-        estimate_model_task_alignment(model, loss_fn, data_val, device, progbar=True)
+        estimate_model_task_alignment(
+            model, loss_fn, data_train, device, progbar=True, max_batches=10
+        )
     )
+
+    for k, v in model.state_dict().items():
+        assert torch.equal(v.cpu(), state[k].cpu())
 
     # Do linearized model training
     lin_model_at_snapshot = linearize_model(model)
