@@ -1,3 +1,4 @@
+#%%
 import logging
 from functools import partial
 
@@ -10,6 +11,7 @@ from tqdm.auto import trange
 from nn_lib.analysis.ntk import estimate_model_task_alignment, linearize_model
 from nn_lib.datasets import MNISTDataModule
 
+#%%
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 data_module = MNISTDataModule(root_dir="/data/datasets/")
@@ -142,3 +144,5 @@ plt.legend()
 plt.ylim(yl)
 plt.tight_layout()
 plt.show()
+
+# %%
