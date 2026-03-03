@@ -11,9 +11,17 @@ free to reach out to us or open an issue on the GitHub repository.
 
 ## Installation
 
-In a shell:
+Using `pip`:
 
     pip install bonsai-nn-library
+
+Using [`uv`](https://docs.astral.sh/uv/) (in a project):
+
+    uv add bonsai-nn-library
+
+Or, as a drop-in replacement for `pip`:
+
+    uv pip install bonsai-nn-library
 
 ## Usage (Python >= 3.10)
 
