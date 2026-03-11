@@ -176,7 +176,7 @@ class TestPrincipalComponents(unittest.TestCase):
         pcs1 = PrincipalComponents.from_data(self.data, center=True)
         pcs2 = PrincipalComponents.from_data(self.data * 2, center=True)
         similarity = pcs1.subspace_similarity(pcs2)
-        torch.testing.assert_allclose(similarity, 1.0)
+        torch.testing.assert_close(similarity.item(), 1.0)
 
     def test_subspace_similarity_null(self):
         pcs1 = PrincipalComponents.from_data(self.data, center=True)

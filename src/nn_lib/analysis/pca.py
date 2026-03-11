@@ -174,7 +174,7 @@ class PrincipalComponents(object):
                         filled_vecs[i, missing] = mu_cond
                     elif method.lower() == "sample":
                         cov_cond = cov_AA - cov_AB @ torch.linalg.solve(cov_BB, cov_AB.T)
-                        filled_vecs[i, missing] = mu_cond + torch.cholesky(
+                        filled_vecs[i, missing] = mu_cond + torch.linalg.cholesky(
                             cov_cond
                         ) @ torch.randn_like(mu_cond)
             return filled_vecs
