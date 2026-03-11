@@ -4,7 +4,6 @@ from torchvision.models import get_model as tv_get_model, get_model_weights as t
 from .fancy_layers import *
 from .graph_module_plus import GraphModulePlus
 from .sparse_auto_encoder import *
-from .utils import *
 
 
 def get_pretrained_model(name: str) -> nn.Module:
