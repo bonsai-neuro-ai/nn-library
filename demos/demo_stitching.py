@@ -1,5 +1,8 @@
 import io
 
+import dotenv
+
+dotenv.load_dotenv()
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import torch
@@ -14,8 +17,9 @@ from nn_lib.utils import conv2d_shape_inverse, frozen
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Define the dataset, pointing root_dir to the location on the server where we keep shared datasets
-data_module = ImageNetDataModule(root_dir="/data/datasets/")
+# Define the dataset; root data location should be specified as DATA_ROOT environment variable,
+# which can be set in a .env file.
+data_module = ImageNetDataModule()
 # DataModule is a concept from pytorch lightning. For performance reasons, data modules are lazy
 # and wait to load the data until we actually ask for it. We need to tell the data module to
 # actually run its setup routines. There's room for API improvement here, especially the unexpected
@@ -45,7 +49,7 @@ def display_model_graph(mdl, dpi=200):
     plt.figure(figsize=(image.shape[1] / dpi, image.shape[0] / dpi), dpi=dpi)
     plt.imshow(image)
     plt.axis("off")
-    plt.savefig("TempGrap.png")
+    plt.savefig("TempGraph.png")
     plt.show()
 
 

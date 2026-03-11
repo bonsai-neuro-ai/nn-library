@@ -9,10 +9,14 @@ from tqdm.auto import trange
 
 from nn_lib.analysis.ntk import estimate_model_task_alignment, linearize_model
 from nn_lib.datasets import MNISTDataModule
+import dotenv
+
+dotenv.load_dotenv()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-data_module = MNISTDataModule(root_dir="/data/datasets/")
+# Data module will look for data wherever the .env file specifies in DATA_ROOT
+data_module = MNISTDataModule()
 data_module.prepare_data()
 data_module.setup("train")
 data_module.setup("val")
