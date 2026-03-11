@@ -23,7 +23,6 @@ classifiers = [
 ]
 dependencies = [
     "jsonargparse",
-    "lightning[pytorch-extra]",
     "matplotlib",
     "mlflow",
     "numpy",

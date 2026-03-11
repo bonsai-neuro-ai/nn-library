@@ -17,7 +17,7 @@ def _generate_data(
 ):
     ctr_x = torch.rand((1, dim_x), device=device) * 5
     q, _ = torch.linalg.qr(torch.randn(dim_x, dim_x, device=device))
-    x_span = q[:, :rank if rank is not None else dim_x]
+    x_span = q[:, : rank if rank is not None else dim_x]
     x_span = x_span @ x_span.T
     x = torch.randn(n_samples, dim_x, device=device) @ x_span + ctr_x
     true_w = torch.randn(dim_x, dim_y, device=device) / np.sqrt(dim_x)
@@ -82,18 +82,14 @@ class TestStreamingRegression(unittest.TestCase):
                         )
 
                         # Add data to slr1 in 10 batches of 10 data points each
-                        slr1 = StreamingLinearRegression(
-                            n_x=10, n_y=5, device=d_, bias=b_
-                        )
+                        slr1 = StreamingLinearRegression(n_x=10, n_y=5, device=d_, bias=b_)
                         for i in range(0, x.shape[0], 10):
                             x_batch = x[i : i + 10]
                             y_batch = y[i : i + 10]
                             slr1.add_batch(x_batch, y_batch)
 
                         # Add data to slr2 in 1 batch of 100 data points
-                        slr2 = StreamingLinearRegression(
-                            n_x=10, n_y=5, device=d_, bias=b_
-                        )
+                        slr2 = StreamingLinearRegression(n_x=10, n_y=5, device=d_, bias=b_)
                         slr2.add_batch(x, y)
 
                         # Assert that the tensors in slr1 and slr2 are the same
@@ -112,9 +108,7 @@ class TestStreamingRegression(unittest.TestCase):
                                 100, 10, 10, 5, bias=b_, device=d_, rank=r_
                             )
 
-                            slr = StreamingLinearRegression(
-                                n_x=10, n_y=5, device=d_, bias=b_
-                            )
+                            slr = StreamingLinearRegression(n_x=10, n_y=5, device=d_, bias=b_)
                             for i in range(0, x.shape[0], 10):
                                 x_batch = x[i : i + 10]
                                 y_batch = y[i : i + 10]

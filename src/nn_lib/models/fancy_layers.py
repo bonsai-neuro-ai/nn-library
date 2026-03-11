@@ -7,7 +7,7 @@ from torch.nn import functional as F
 
 from nn_lib.analysis.regression import StreamingLinearRegression, safe_regression
 from nn_lib.models.parametrizations import low_rank, orthogonal, scaled_orthogonal
-from nn_lib.models.utils import conv2d_shape
+from nn_lib.utils.models import conv2d_shape
 
 __all__ = [
     "Interpolate2d",

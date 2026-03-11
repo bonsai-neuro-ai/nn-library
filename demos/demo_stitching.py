@@ -1,27 +1,25 @@
 import io
 
+import dotenv
+
+dotenv.load_dotenv()
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from tqdm.auto import tqdm
 
-import nn_lib.models.utils
 from nn_lib.datasets import ImageNetDataModule
-from nn_lib.models import (
-    get_pretrained_model,
-    GraphModulePlus,
-    RegressableConv2d,
-    Interpolate2d,
-    conv2d_shape_inverse,
-)
+from nn_lib.models import get_pretrained_model, GraphModulePlus, RegressableConv2d, Interpolate2d
 from nn_lib.optim import LRFinder
 from nn_lib.optim.lr_finder import UnstableLREstimate
+from nn_lib.utils import conv2d_shape_inverse, frozen
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Define the dataset, pointing root_dir to the location on the server where we keep shared datasets
-data_module = ImageNetDataModule(root_dir="/data/datasets/")
+# Define the dataset; root data location should be specified as DATA_ROOT environment variable,
+# which can be set in a .env file.
+data_module = ImageNetDataModule()
 # DataModule is a concept from pytorch lightning. For performance reasons, data modules are lazy
 # and wait to load the data until we actually ask for it. We need to tell the data module to
 # actually run its setup routines. There's room for API improvement here, especially the unexpected
@@ -51,7 +49,7 @@ def display_model_graph(mdl, dpi=200):
     plt.figure(figsize=(image.shape[1] / dpi, image.shape[0] / dpi), dpi=dpi)
     plt.imshow(image)
     plt.axis("off")
-    plt.savefig("TempGrap.png")
+    plt.savefig("TempGraph.png")
     plt.show()
 
 
@@ -200,7 +198,7 @@ for k, v in modelAB.named_parameters():
 
 history = []
 # To train stitching layer AND downstream model, just remove 'modelB' from the list of frozen models
-with nn_lib.models.utils.frozen(modelA, modelB):
+with frozen(modelA, modelB):
     # Train for 100 steps or 1 epoch, whichever comes first
     for step, (im, la) in tqdm(
         enumerate(train_dataloader), total=100, desc="Train Stitching Layer"

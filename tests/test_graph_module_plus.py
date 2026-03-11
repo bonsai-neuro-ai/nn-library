@@ -1,16 +1,15 @@
 import unittest
 from copy import deepcopy
-from typing import Mapping
 from warnings import catch_warnings
 
 import torch
-from torch import nn, fx
+from torch import nn
 from torch.fx import symbolic_trace
 from torchvision.models.resnet import resnet18, resnet34
 
 from nn_lib.models.graph_module_plus import GraphModulePlus
 from nn_lib.models.graph_utils import prefix_all_nodes
-from nn_lib.models.utils import frozen
+from nn_lib.utils.models import frozen
 
 
 class ModuleTestCase(unittest.TestCase):

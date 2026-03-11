@@ -1,6 +1,7 @@
+from typing import Optional
+
 import torch
 from torch.utils.data import DataLoader, random_split
-import lightning as lit
 import os
 from abc import ABCMeta, abstractmethod
 from tqdm.auto import tqdm
@@ -10,20 +11,27 @@ from nn_lib.datasets.enums import TorchvisionDatasetType
 import torchvision.transforms.v2 as tv_transforms
 
 
-class TorchvisionDataModuleBase(lit.LightningDataModule, metaclass=ABCMeta):
-    __metafields__ = frozenset({"root_dir", "num_workers"})
-
+class TorchvisionDataModuleBase(metaclass=ABCMeta):
     _default_shape: tuple[int, int, int] = None
     name: str = None
     type: TorchvisionDatasetType = None
 
     def __init__(
-        self, root_dir: str | Path = "data", train_val_split: float = 11 / 12, seed: int = 8675309
+        self,
+        root_dir: Optional[str | Path] = None,
+        train_val_split: float = 11 / 12,
+        seed: int = 8675309,
     ):
         super().__init__()
         self.train_val_split = train_val_split
         self.seed = seed
-        self.root_dir = Path(root_dir)
+        # root_dir is configured with varying degrees of precedence. If passed in the
+        # constructor, it will be used. Otherwise, we'll look for an environment variable.
+        # Finally, if neither of those are set, we'll default to "./data"
+        if root_dir is not None:
+            self.root_dir = Path(root_dir)
+        else:
+            self.root_dir = Path(os.environ.get("DATA_ROOT", "./data"))
         self.train_ds_split = self.val_ds_split = self.test_ds = None
         self.train_transform = self.test_transform = None
 

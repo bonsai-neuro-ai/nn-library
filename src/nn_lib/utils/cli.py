@@ -2,13 +2,11 @@ from argparse import Namespace
 from typing import (
     assert_never,
     Optional,
-    Iterable,
     Union,
     Any,
     get_args,
     Callable,
     Generator,
-    Mapping,
 )
 
 from jsonargparse import Namespace as JSONNamespace, strip_meta
@@ -23,7 +21,7 @@ def _params_to_dict_no_recursion(params: ParamsLike) -> dict:
     """
     match params:
         case JSONNamespace():
-            return strip_meta(params).as_dict()
+            return params.clone(with_meta=False).as_dict()
         case Namespace():
             return vars(params)
         case dict():

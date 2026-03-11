@@ -45,7 +45,6 @@ class TestNTK(unittest.TestCase):
         with self.assertRaises(ValueError):
             ntk_in_memory(self.model_bn, self.x)
 
-
     def test_ntk_in_memory_matches_ntk_vjp(self):
         for device in self.devices:
             self._set_device(device)
