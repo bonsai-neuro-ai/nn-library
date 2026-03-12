@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from torch.fx import symbolic_trace, GraphModule, Graph, Node
 
-from nn_lib.models.graph_utils import prefix_all_nodes
+from nn_lib.models.graph_utils import prefix_all_nodes, validate_common_placeholder_attrs
 from nn_lib.utils import supersedes
 
 
@@ -53,6 +53,7 @@ class GraphModulePlus(GraphModule):
         modules: dict[str, nn.Module],
         rewire_inputs: dict[str, str | Iterable[str]],
         auto_trace: bool = True,
+        share_inputs: bool = True,
     ) -> Self:
         """Create a new GraphModulePlus by merging a set of modules together.
 
@@ -67,6 +68,9 @@ class GraphModulePlus(GraphModule):
         :param auto_trace: if True, any modules that are not already GraphModules will be traced
             before being merged. If False, modules that are not GraphModules will be called
             atomically with a new call_module node.
+        :param share_inputs: if True, the 'placeholder' nodes will all be replaced with a single
+            shared 'x' input node. If False, each module will retain its own (prefixed) input node.
+            This is overridden by any rewiring specified in 'rewire_inputs'.
         """
 
         new_graph = Graph()
@@ -97,6 +101,22 @@ class GraphModulePlus(GraphModule):
                     new_output_value_node = new_node
                 case _:
                     assert_never(module)
+
+        # If share_inputs=True, replace all placeholder nodes with a single shared 'x' node. This is
+        # just a convenience so that we don't have to worry about input node names when merging
+        # multiple modules together. If share_inputs=False, we'll keep the original input nodes with
+        # their prefixes, which means the user will have to specify the prefixed input node names
+        # when rewiring.
+        if share_inputs:
+            existing_inputs = [node for node in new_graph.nodes if node.op == "placeholder"]
+            with new_graph.inserting_before():
+                shared_input_node = new_graph.placeholder(
+                    "x", *validate_common_placeholder_attrs(existing_inputs)
+                )
+            for node in existing_inputs:
+                if node.op == "placeholder":
+                    node.replace_all_uses_with(shared_input_node)
+                    new_graph.erase_node(node)
 
         # Create the new GraphModulePlus object, taking attributes from the modules dict; nodes with
         # targets pointing to "moduleName.attribute" will automatically resolve, since the

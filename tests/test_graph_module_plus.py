@@ -3,13 +3,14 @@ from copy import deepcopy
 from warnings import catch_warnings
 
 import torch
-from nn_lib.models.graph_module_plus import GraphModulePlus
-from nn_lib.models.graph_utils import prefix_all_nodes
-from nn_lib.utils.models import frozen
 from torch import nn
 from torch.fx import symbolic_trace
 from torchvision.models.resnet import resnet18, resnet34
 from torchvision.models.segmentation.fcn import fcn_resnet50
+
+from nn_lib.models.graph_module_plus import GraphModulePlus
+from nn_lib.models.graph_utils import prefix_all_nodes
+from nn_lib.utils.models import frozen
 
 
 class ModuleTestCase(unittest.TestCase):
@@ -70,17 +71,18 @@ class DummyModuleWithMethodsAndAssertions(nn.Module):
 class DummyModuleWithLongSkipConnection(nn.Module):
     def __init__(self):
         super().__init__()
-        self.linear1 = nn.Linear(2, 10)
-        self.linear2 = nn.Linear(10, 6)
-        self.linear3 = nn.Linear(6, 8)
-        self.linear4 = nn.Linear(8, 10)
+        self.fc1 = nn.Linear(2, 4)
+        self.fc2 = nn.Linear(4, 6)
+        self.fc3 = nn.Linear(6, 8)
+        self.fc4 = nn.Linear(8, 10)
+        self.skipper = nn.Linear(2, 10)
 
     def forward(self, x):
-        out1 = self.linear1(x)
-        out2 = self.linear2(out1)
-        out3 = self.linear3(out2)
-        out4 = self.linear4(out3)
-        return out4 + out1
+        out1 = self.fc1(x)
+        out2 = self.fc2(out1)
+        out3 = self.fc3(out2)
+        out4 = self.fc4(out3)
+        return out4 + self.skipper(x)
 
 
 class DummyModuleWithDictOutput(nn.Module):
@@ -357,23 +359,62 @@ class TestGraphModulePlus(ModuleTestCase):
         with self.assertRaises(AttributeError):
             merged_model.stitching_layer.update_weight(0.5)
 
-    def test_merge_manages_skip_connections_simple(self):
+    def test_merge_manages_skip_connections_merge_inputs(self):
         # Inspired by the challenge of stitching an ImageNet-trained (classification) model into
         # a COCO-trained (segmentation) model. The COCO models often involve some input-dependent
         # ops that affect later layers, e.g. reshaping the output. This breaks our typical stitching
         # assumption that models can be split at the given layer(s) in a way that cleanly separates
         # inputs from outputs.
-        modelA = nn.Sequential(nn.Linear(2, 4), nn.Linear(4, 6), nn.Linear(6, 8), nn.Linear(8, 10))
+        modelA = nn.Sequential(
+            nn.Linear(2, 4),  # Gets node name 'modelA__0'
+            nn.Linear(4, 6),  # Gets node name 'modelA__1'
+            nn.Linear(6, 8),  # Gets node name 'modelA__2'
+            nn.Linear(8, 10),  # Gets node name 'modelA__3'
+        )
         modelB = DummyModuleWithLongSkipConnection()
         merged_model = GraphModulePlus.new_from_merge(
             modules={"modelA": modelA, "modelB": modelB},
-            rewire_inputs={"modelB_linear2": "modelA__2"},
+            rewire_inputs={"modelB_fc3": "modelA__1"},
             auto_trace=True,
+            share_inputs=True,
         )
         # The merged model should run without crashing, and the skip connection in modelB should be
         # properly rewired to the new input from modelA.
-        dummy_input = torch.randn(1, 2)
-        merged_model(dummy_input)
+        dummy_input = torch.randn(3, 2)
+        out = merged_model(dummy_input)
+        self.assertEqual(out.shape, (3, 10), f"Expected output shape (3, 10), got {out.shape}")
+
+    def test_merge_manages_skip_connections_separate_inputs(self):
+        # Same as test_merge_manages_skip_connections_merge_inputs, but where modelA expects a
+        # different input size than modelB and thus requires its own separate input.
+        modelA = nn.Sequential(
+            nn.Linear(5, 4),  # Gets node name 'modelA__0'
+            nn.Linear(4, 6),  # Gets node name 'modelA__1'
+            nn.Linear(6, 8),  # Gets node name 'modelA__2'
+            nn.Linear(8, 10),  # Gets node name 'modelA__3'
+        )
+        modelB = DummyModuleWithLongSkipConnection()
+
+        merged_model = GraphModulePlus.new_from_merge(
+            modules={"modelA": modelA, "modelB": modelB},
+            rewire_inputs={"modelB_fc3": "modelA__1"},
+            auto_trace=True,
+            share_inputs=False,
+        )
+
+        # The merged model *expects* two inputs; calling it with just one should raise an error
+        with self.assertRaises(TypeError):
+            dummy_input = torch.randn(3, 2)
+            _ = merged_model(dummy_input)
+
+        with self.assertRaises(TypeError):
+            dummy_input = torch.randn(3, 5)
+            _ = merged_model(dummy_input)
+
+        # It should work with (modelA_x, modelB_x) inputs positionally
+        dummy_inputs = torch.randn(3, 5), torch.randn(3, 2)
+        out = merged_model(*dummy_inputs)
+        self.assertEqual(out.shape, (3, 10), f"Expected output shape (3, 10), got {out.shape}")
 
     def test_merge_manages_skip_connections_resnet(self):
         # Inspired by the challenge of stitching an ImageNet-trained (classification) model into

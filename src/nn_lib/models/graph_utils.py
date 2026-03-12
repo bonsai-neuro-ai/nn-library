@@ -1,3 +1,4 @@
+import inspect
 import warnings
 from copy import deepcopy
 from typing import Iterable, Optional, Any, assert_never
@@ -11,6 +12,7 @@ from nn_lib.utils import deprecated
 __all__ = [
     "prefix_all_nodes",
     "get_topology_for_subset_of_layers",
+    "validate_common_placeholder_attrs",
 ]
 
 
@@ -109,6 +111,31 @@ def get_topology_for_subset_of_layers(
                 depends_on_keys[node.name].update(depends_on_keys.get(parent.name, set()))
 
     return topology
+
+
+def validate_common_placeholder_attrs(placeholders: Iterable[Node]):
+    """Given multiple placeholder nodes, validate that they can be merged/replaced with a single
+    placeholder. Return the type_expr and default value (if each exists).
+    """
+    type_exprs = set(node.type for node in placeholders if node.type is not None)
+    if len(type_exprs) > 1:
+        raise ValueError(f"Cannot merge placeholders with different type expressions: {type_exprs}")
+    elif len(type_exprs) == 1:
+        type_expr = type_exprs.pop()
+    else:
+        type_expr = None
+
+    default_values = set(node.args[0] for node in placeholders if len(node.args) > 0)
+    if len(default_values) > 1:
+        raise ValueError(
+            f"Cannot merge placeholders with different default values: {default_values}"
+        )
+    elif len(default_values) == 1:
+        default_value = default_values.pop()
+    else:
+        default_value = inspect.Signature.empty
+
+    return type_expr, default_value
 
 
 ##############################
