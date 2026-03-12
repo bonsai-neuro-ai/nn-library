@@ -71,7 +71,6 @@ class GraphModulePlus(GraphModule):
 
         new_graph = Graph()
         class_name = "Merged" + "".join([m.__class__.__name__ for m in modules.values()])
-        prefix_node_lookup = {}
         new_node_lookup = {}
 
         # By default, the output of the new module will be the output of the last module in the
@@ -86,11 +85,9 @@ class GraphModulePlus(GraphModule):
                     # If we're merging a GraphModule, copy it by copying the underlying graph
                     # after adding a prefix to all nodes. The prefix is required so that the
                     # nodes' args and targets point to attributes of the root dict.
-                    new_graph.graph_copy(
-                        prefix_all_nodes(module.graph, name, val_map=prefix_node_lookup),
-                        val_map=new_node_lookup,
+                    new_output_value_node = new_graph.graph_copy(
+                        prefix_all_nodes(module.graph, name), val_map=new_node_lookup
                     )
-                    new_output_value_node = new_node_lookup[prefix_node_lookup[module.output_value]]
                 case nn.Module():
                     # We should only get here if auto_trace=False and module was a plain-old
                     # nn.Module. In this case, we'll add it as a call_module node to the graph.
