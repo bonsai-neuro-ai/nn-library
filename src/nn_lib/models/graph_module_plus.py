@@ -404,11 +404,16 @@ class GraphModulePlus(GraphModule):
 
         return self
 
-    def set_output(self, output: str | Node) -> Self:
+    def set_output(self, output: str | Node | Any) -> Self:
         """Remove all preexisting outputs and set the output of a graph to the node of the given
         name."""
-        # Find the named node to be the arg to a new output node
-        node_to_output = self._resolve_nodes(output)[0]
+        if isinstance(output, str) or isinstance(output, Node):
+            # Find the named node to be the arg to a new output node
+            node_to_output = self._resolve_nodes(output)[0]
+        else:
+            # In cases like outputting a dict, the output passed in is itself the thing we want
+            # to pass to self.graph.output() below.
+            node_to_output = output
 
         # Remove all preexisting outputs.
         self._rm_output()
