@@ -3,13 +3,13 @@ from copy import deepcopy
 from warnings import catch_warnings
 
 import torch
-from torch import nn
-from torch.fx import symbolic_trace
-from torchvision.models.resnet import resnet18, resnet34
-
 from nn_lib.models.graph_module_plus import GraphModulePlus
 from nn_lib.models.graph_utils import prefix_all_nodes
 from nn_lib.utils.models import frozen
+from torch import nn
+from torch.fx import symbolic_trace
+from torchvision.models.resnet import resnet18, resnet34
+from torchvision.models.segmentation.fcn import fcn_resnet50
 
 
 class ModuleTestCase(unittest.TestCase):
@@ -65,6 +65,32 @@ class DummyModuleWithMethodsAndAssertions(nn.Module):
         x = torch.permute(x, (1, 0))
 
         return x
+
+
+class DummyModuleWithLongSkipConnection(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear1 = nn.Linear(2, 10)
+        self.linear2 = nn.Linear(10, 6)
+        self.linear3 = nn.Linear(6, 8)
+        self.linear4 = nn.Linear(8, 10)
+
+    def forward(self, x):
+        out1 = self.linear1(x)
+        out2 = self.linear2(out1)
+        out3 = self.linear3(out2)
+        out4 = self.linear4(out3)
+        return out4 + out1
+
+
+class DummyModuleWithDictOutput(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear1 = nn.Linear(2, 10)
+
+    def forward(self, x):
+        out1 = self.linear1(x)
+        return {"out": out1}
 
 
 class TestGraphModulePlus(ModuleTestCase):
@@ -331,6 +357,52 @@ class TestGraphModulePlus(ModuleTestCase):
         with self.assertRaises(AttributeError):
             merged_model.stitching_layer.update_weight(0.5)
 
+    def test_merge_manages_skip_connections_simple(self):
+        # Inspired by the challenge of stitching an ImageNet-trained (classification) model into
+        # a COCO-trained (segmentation) model. The COCO models often involve some input-dependent
+        # ops that affect later layers, e.g. reshaping the output. This breaks our typical stitching
+        # assumption that models can be split at the given layer(s) in a way that cleanly separates
+        # inputs from outputs.
+        modelA = nn.Sequential(nn.Linear(2, 4), nn.Linear(4, 6), nn.Linear(6, 8), nn.Linear(8, 10))
+        modelB = DummyModuleWithLongSkipConnection()
+        merged_model = GraphModulePlus.new_from_merge(
+            modules={"modelA": modelA, "modelB": modelB},
+            rewire_inputs={"modelB_linear2": "modelA__2"},
+            auto_trace=True,
+        )
+        # The merged model should run without crashing, and the skip connection in modelB should be
+        # properly rewired to the new input from modelA.
+        dummy_input = torch.randn(1, 2)
+        merged_model(dummy_input)
+
+    def test_merge_manages_skip_connections_resnet(self):
+        # Inspired by the challenge of stitching an ImageNet-trained (classification) model into
+        # a COCO-trained (segmentation) model. The COCO models often involve some input-dependent
+        # ops that affect later layers, e.g. reshaping the output. This breaks our typical stitching
+        # assumption that models can be split at the given layer(s) in a way that cleanly separates
+        # inputs from outputs.
+        modelA = GraphModulePlus.new_from_trace(resnet18())
+        modelB = GraphModulePlus.new_from_trace(fcn_resnet50()).set_output("interpolate")
+        stitcher = FakeStitchingLayerForTesting(128, 128)
+        # in resnet18, 'layer2_1_relu_1' has shape (128, 28, 28)
+        # in fcn_resnet50, 'layer2_1_relu_1' also happens to have shape (128, 28, 28)
+        merged_model = GraphModulePlus.new_from_merge(
+            modules={"modelA": modelA, "stitching_layer": stitcher, "modelB": modelB},
+            rewire_inputs={
+                "stitching_layer_conv": "modelA_layer2_1_relu_1",
+                "modelB_backbone_layer2_1_relu_1": "stitching_layer_conv",
+            },
+            auto_trace=True,
+        )
+
+        dummy_input = torch.randn(1, 3, 128, 128)
+        out = merged_model(dummy_input)
+        self.assertEqual(
+            out.shape,
+            (1, 21, 128, 128),
+            f"Expected output shape (1, 21, 128, 128), got {out.shape}",
+        )
+
     def test_prefix_leaves_original_unchanged(self):
         """Assert that prefix_all_nodes treats its inputs as immutable."""
         my_gm = GraphModulePlus.new_from_trace(resnet18())
@@ -352,6 +424,16 @@ class TestGraphModulePlus(ModuleTestCase):
 
         og_out = self.gm(self.dummy_input)
         new_out = new_gm(self.dummy_input)
+        torch.testing.assert_close(og_out, new_out)
+
+    def test_prefix_dict_output(self):
+        gm = GraphModulePlus.new_from_trace(DummyModuleWithDictOutput())
+        new_graph = prefix_all_nodes(gm.graph, prefix="pre")
+        new_gm = GraphModulePlus(root=nn.ModuleDict({"pre": gm}), graph=new_graph)
+
+        dummy_input = torch.randn(4, 2)
+        og_out = gm(dummy_input)
+        new_out = new_gm(dummy_input)
         torch.testing.assert_close(og_out, new_out)
 
     def test_prefix_call_module(self):
