@@ -1,4 +1,5 @@
 import unittest
+from itertools import batched
 
 import torch
 from torch.testing import assert_close
@@ -7,10 +8,11 @@ from torchvision.models import resnet18
 
 from nn_lib.analysis.similarity.utils import (
     prep_conv_layers,
-    assert_repeatable_iterable,
+    assert_repeatable_iter_factory,
     create_gram_matrix_from_batches,
     iter_batches_of_reps,
     check_shapes,
+    RunningAverage,
 )
 
 
@@ -114,13 +116,27 @@ class TestShapeHandling(unittest.TestCase):
 
 
 class TestIteratorUtils(unittest.TestCase):
+    def test_running_average_1(self):
+        values = torch.rand(10)
+        ra = RunningAverage()
+        for v in values:
+            ra.update(v, batch_count=1)
+        assert_close(ra.avg, torch.mean(values))
+
+    def test_running_average_batched(self):
+        values = torch.rand(10)
+        ra = RunningAverage()
+        for v in batched(values, 2):
+            ra.update(sum(v) / len(v), batch_count=2)
+        assert_close(ra.avg, torch.mean(values))
+
     def test_dataloader_repeatable(self):
         x = torch.randn(100, 5)
         y = torch.randn(100, 5)
         ds = TensorDataset(x, y)
 
         dl_static = DataLoader(ds, batch_size=10, shuffle=False)
-        assert_repeatable_iterable(lambda: map(lambda b: b[0], dl_static))
+        assert_repeatable_iter_factory(lambda: dl_static)
 
     def test_shuffled_dataloader_not_repeatable(self):
         x = torch.randn(100, 5)
@@ -129,34 +145,60 @@ class TestIteratorUtils(unittest.TestCase):
 
         dl_shuffle = DataLoader(ds, batch_size=10, shuffle=True)
         with self.assertRaises(ValueError):
-            assert_repeatable_iterable(lambda: map(lambda b: b[0], dl_shuffle))
+            assert_repeatable_iter_factory(lambda: dl_shuffle)
 
     def test_create_gram_flat(self):
         x = torch.randn(100, 5)
         ds = TensorDataset(x)
         dl = DataLoader(ds, batch_size=10, shuffle=False)
 
-        gram = create_gram_matrix_from_batches(lambda: map(lambda b: b[0], dl))
+        gram = create_gram_matrix_from_batches(lambda: dl)[0]
         true_gram = x @ x.T
 
         assert_close(gram, true_gram)
 
     def test_create_gram_conv(self):
-        x = torch.randn(100, 3, 8, 8)
+        x = torch.randn(100, 3, 4, 4)
         ds = TensorDataset(x)
         dl = DataLoader(ds, batch_size=10, shuffle=False)
 
-        gram = create_gram_matrix_from_batches(lambda: map(lambda b: b[0], dl))
+        gram = create_gram_matrix_from_batches(lambda: dl)[0]
         true_gram = torch.einsum("ichw,jchw->ij", x, x)
 
         assert_close(gram, true_gram)
+
+    def test_create_gram_flat_multiple(self):
+        x = torch.randn(100, 5)
+        y = torch.randn(100, 6)
+        ds = TensorDataset(x, y)
+        dl = DataLoader(ds, batch_size=10, shuffle=False)
+
+        gram_x, gram_y = create_gram_matrix_from_batches(lambda: dl)
+        true_gram_x = x @ x.T
+        true_gram_y = y @ y.T
+
+        assert_close(gram_x, true_gram_x)
+        assert_close(gram_y, true_gram_y)
+
+    def test_create_gram_conv_multiple(self):
+        x = torch.randn(100, 3, 4, 4)
+        y = torch.randn(100, 6)
+        ds = TensorDataset(x, y)
+        dl = DataLoader(ds, batch_size=10, shuffle=False)
+
+        gram_x, gram_y = create_gram_matrix_from_batches(lambda: dl)
+        true_gram_x = torch.einsum("ichw,jchw->ij", x, x)
+        true_gram_y = torch.einsum("in,jn->ij", y, y)
+
+        assert_close(gram_x, true_gram_x)
+        assert_close(gram_y, true_gram_y)
 
     def test_gram_resnet(self):
         model = resnet18(pretrained=False).eval()
         x = torch.randn(100, 3, 224, 224)
         ds = TensorDataset(x)
         dl = DataLoader(ds, batch_size=10, shuffle=False)
-        gram = create_gram_matrix_from_batches(lambda: iter_batches_of_reps(dl, model))
+        gram = create_gram_matrix_from_batches(lambda: iter_batches_of_reps(dl, model))[0]
 
         with torch.no_grad():
             y = model(x)

@@ -1,10 +1,27 @@
 from typing import Optional, Iterable, Literal, Callable
 
-import torch.nn.functional as F
-
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader
+
+BatchIteratorFactory = Callable[
+    [],
+    Iterable[torch.Tensor] | Iterable[tuple[torch.Tensor, ...] | Iterable[list[torch.Tensor, ...]]],
+]
+
+
+class RunningAverage:
+    def __init__(self):
+        self.avg = None
+        self.count = 0
+
+    def update(self, batch_avg: torch.Tensor, batch_count: int):
+        if self.avg is None:
+            self.avg = batch_avg
+        else:
+            self.avg = self.avg + (batch_avg - self.avg) * batch_count / (self.count + batch_count)
+        self.count += batch_count
 
 
 def prep_conv_layers(
@@ -121,7 +138,7 @@ def iter_batches_of_reps(
             break
 
 
-def assert_repeatable_iterable(iter_factory: Callable[[], Iterable[torch.Tensor]]):
+def assert_repeatable_iter_factory(iter_factory: BatchIteratorFactory) -> int:
     """Assert that the given iterable of batches is 'repeatable' in the sense that multiple calls
     to iter(batches) always returns the same values in the same order. Python has no built-in way
     to mark this with type annotations.
@@ -130,20 +147,29 @@ def assert_repeatable_iterable(iter_factory: Callable[[], Iterable[torch.Tensor]
     memory. We therefore adopt an 'iterator factory' pattern where the caller provides a (perhaps
     lambda) function which, when called with no arguments, produces something that we can iterate
     over. This function asserts that the factory has this repeatability property
+
+    Since this assertion involves peeking at an iterator, we for convenience also return the number
+    of tensors per iteration (i.e. if the iterator returns (x,) or (x,y) or (x,y,z) this fn will
+    return 1, 2, or 3).
     """
     batch_0_iter_0 = next(iter(iter_factory()))
     batch_0_iter_1 = next(iter(iter_factory()))
 
-    if not torch.equal(batch_0_iter_0, batch_0_iter_1):
-        raise ValueError(
-            "Two iterations of batches did not give identical results (are you perhaps using a "
-            "DataLoader and need to set shuffle=False?)"
-        )
+    if isinstance(batch_0_iter_0, torch.Tensor):
+        batch_0_iter_0 = [batch_0_iter_0]
+        batch_0_iter_1 = [batch_0_iter_1]
+
+    for b00, b01 in zip(batch_0_iter_0, batch_0_iter_1):
+        if not torch.equal(b00, b01):
+            raise ValueError(
+                "Two iterations of batches did not give identical results (are you perhaps using a "
+                "DataLoader and need to set shuffle=False?)"
+            )
+
+    return len(batch_0_iter_0)
 
 
-def create_gram_matrix_from_batches(
-    iter_factory: Callable[[], Iterable[torch.Tensor]]
-) -> torch.Tensor:
+def create_gram_matrix_from_batches(iter_factory: BatchIteratorFactory) -> list[torch.Tensor]:
     """Construct a Gram matrix by populating blocks (one pair of batches = one block). Attempts
     to do so somewhat memory-efficiently by only ever keeping two batches in memory at a time. The
     iterator over batches will be re-used, so it must yield the same tensors in the same order when
@@ -155,41 +181,56 @@ def create_gram_matrix_from_batches(
     over. Multiple calls to the factory must return iterables which themselves yield tensors in
     the same order every time.
     """
-    assert_repeatable_iterable(iter_factory)
+    n_tensors = assert_repeatable_iter_factory(iter_factory)
 
-    blocks = []
-    for i, x_i in enumerate(iter_factory()):
-        block_row_i = []
-        for j, x_j in enumerate(iter_factory()):
-            gram_chunk_ij = torch.einsum(
-                "in,jn->ij", x_i.flatten(start_dim=1), x_j.flatten(start_dim=1)
-            )
-            block_row_i.append(gram_chunk_ij)
+    blocks_per_x = [[] for _ in range(n_tensors)]
+    for i, xyz_i in enumerate(iter_factory()):
+        if isinstance(xyz_i, torch.Tensor):
+            xyz_i = [xyz_i]
+
+        block_row_i = [[] for _ in range(n_tensors)]
+        for j, xyz_j in enumerate(iter_factory()):
+            if isinstance(xyz_j, torch.Tensor):
+                xyz_j = [xyz_j]
+
+            for idx, (x_i, x_j) in enumerate(zip(xyz_i, xyz_j)):
+                assert torch.is_tensor(x_i) and torch.is_tensor(x_j)
+                gram_chunk_ij = torch.einsum(
+                    "in,jn->ij", x_i.flatten(start_dim=1), x_j.flatten(start_dim=1)
+                )
+                block_row_i[idx].append(gram_chunk_ij)
+
             # Exploit symmetry; only process the block-lower-triangle of the gram matrix
             if j == i:
                 break
-        blocks.append(block_row_i)
+
+        for idx, row_i in enumerate(block_row_i):
+            blocks_per_x[idx].append(row_i)
 
     # At this point, we have all lower-block-triangle elements of the final gram matrices. Which
     # also means that we now know how big the final gram matrices will be. Let's pre-allocate them.
-    m = sum(len(row[0]) for row in blocks)
-    gram = torch.empty(m, m, dtype=blocks[0][0].dtype, device=blocks[0][0].device)
-    start_i = 0
-    for i, row_i in enumerate(blocks):
-        start_j = 0
-        for j, block_ij in enumerate(row_i):
-            n_i, n_j = block_ij.shape
-            gram[start_i : start_i + n_i, start_j : start_j + n_j] = block_ij
-            gram[start_j : start_j + n_j, start_i : start_i + n_i] = block_ij.T
-            start_j += n_j
-        start_i += n_i
-    return gram
+    grams = []
+    for blocks in blocks_per_x:
+        m = sum(len(row[0]) for row in blocks_per_x[0])
+        gram = torch.empty(m, m, dtype=blocks[0][0].dtype, device=blocks[0][0].device)
+        start_i = 0
+        for i, row_i in enumerate(blocks):
+            start_j = 0
+            for j, block_ij in enumerate(row_i):
+                n_i, n_j = block_ij.shape
+                gram[start_i : start_i + n_i, start_j : start_j + n_j] = block_ij
+                gram[start_j : start_j + n_j, start_i : start_i + n_i] = block_ij.T
+                start_j += n_j
+            start_i += n_i
+        grams.append(gram)
+    return grams
 
 
 __all__ = [
-    "assert_repeatable_iterable",
+    "assert_repeatable_iter_factory",
     "check_shapes",
     "create_gram_matrix_from_batches",
     "iter_batches_of_reps",
     "prep_conv_layers",
+    "RunningAverage",
 ]
