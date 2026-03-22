@@ -1,9 +1,62 @@
 from collections import defaultdict
 
 import torch
+from math import sqrt
 
 from nn_lib.analysis.similarity.comparator import StreamingComparator
+from nn_lib.utils import rank_one_svd_update
 from .utils import assert_repeatable_iter_factory, BatchIteratorFactory, RunningAverage
+
+
+def _calculate_moments(batch_iterator_factory: BatchIteratorFactory):
+    moments = defaultdict(RunningAverage)
+
+    for x, y in batch_iterator_factory():
+        x = x.flatten(start_dim=1)
+        y = y.flatten(start_dim=1)
+        m, n_x = x.shape
+        _, n_y = y.shape
+
+        moments["moment1_x"].update(torch.mean(x, dim=0), m)
+        moments["moment1_y"].update(torch.mean(y, dim=0), m)
+        moments["moment2_xx"].update(torch.einsum("mi,mj->ij", x, x) / m, m)
+        moments["moment2_yy"].update(torch.einsum("mi,mj->ij", y, y) / m, m)
+        moments["moment2_xy"].update(torch.einsum("mi,mj->ij", x, y) / m, m)
+
+    return moments
+
+
+def _moments_to_covs(
+    moments: dict[str, RunningAverage], centered: bool
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    m1x = moments["moment1_x"].avg
+    m1y = moments["moment1_y"].avg
+    m2xx = moments["moment2_xx"].avg
+    m2yy = moments["moment2_yy"].avg
+    m2xy = moments["moment2_xy"].avg
+
+    if centered:
+        cov_xx = m2xx - m1x[:, None] * m1x[None, :]
+        cov_yy = m2yy - m1y[:, None] * m1y[None, :]
+        cov_xy = m2xy - m1x[:, None] * m1y[None, :]
+    else:
+        cov_xx = m2xx
+        cov_yy = m2yy
+        cov_xy = m2xy
+
+    return cov_xx, cov_yy, cov_xy
+
+
+def distance(
+    trace_cov_xx: torch.Tensor, trace_cov_yy: torch.Tensor, nuc_norm_xy: torch.Tensor, scaled: bool
+) -> torch.Tensor:
+    if scaled:
+        # Riemannian Shape Distance (arc length):
+        cosine_similarity = nuc_norm_xy / torch.sqrt(trace_cov_xx * trace_cov_yy)
+        return torch.arccos(torch.clip(cosine_similarity, -1.0, 1.0))
+    else:
+        # Procrustes size-and-shape distance (Euclidean):
+        return torch.sqrt(torch.clip(trace_cov_xx + trace_cov_yy - 2 * nuc_norm_xy, 0.0, None))
 
 
 class ShapeDistance(StreamingComparator):
@@ -21,48 +74,47 @@ class ShapeDistance(StreamingComparator):
         self.centered = centered
         self.scaled = scaled
 
-    def distance(
-        self, cov_xx: torch.Tensor, cov_yy: torch.Tensor, cov_xy: torch.Tensor
-    ) -> torch.Tensor:
-        norm_xx = torch.trace(cov_xx)
-        norm_yy = torch.trace(cov_yy)
-        norm_xy = torch.linalg.norm(cov_xy, ord="nuc")
-        if self.scaled:
-            # Riemannian Shape Distance (arc length):
-            cosine_similarity = norm_xy / torch.sqrt(norm_xx * norm_yy)
-            return torch.arccos(torch.clip(cosine_similarity, -1.0, 1.0))
-        else:
-            # Procrustes size-and-shape distance (Euclidean):
-            return torch.sqrt(torch.clip(norm_xx + norm_yy - 2 * norm_xy, 0.0, None))
-
     def streaming_compare(self, batch_iterator_factory: BatchIteratorFactory) -> torch.Tensor:
-        moments = defaultdict(RunningAverage)
+        moments = _calculate_moments(batch_iterator_factory)
+        cov_xx, cov_yy, cov_xy = _moments_to_covs(moments, self.centered)
+        return distance(
+            torch.trace(cov_xx),
+            torch.trace(cov_yy),
+            torch.linalg.norm(cov_xy, ord="nuc"),
+            scaled=self.scaled,
+        )
 
-        for x, y in batch_iterator_factory():
-            x = x.flatten(start_dim=1)
-            y = y.flatten(start_dim=1)
-            m, n_x = x.shape
-            _, n_y = y.shape
 
-            moments["moment1_x"].update(torch.mean(x, dim=0), m)
-            moments["moment1_y"].update(torch.mean(y, dim=0), m)
-            moments["moment2_xx"].update(torch.einsum("mi,mj->ij", x, x) / m, m)
-            moments["moment2_yy"].update(torch.einsum("mi,mj->ij", y, y) / m, m)
-            moments["moment2_xy"].update(torch.einsum("mi,mj->ij", x, y) / m, m)
+class CrossValidatedShapeDistance(StreamingComparator):
+    def __init__(self, centered: bool, scaled: bool):
+        self.centered = centered
+        self.scaled = scaled
 
-        m1x = moments["moment1_x"].avg
-        m1y = moments["moment1_y"].avg
-        m2xx = moments["moment2_xx"].avg
-        m2yy = moments["moment2_yy"].avg
-        m2xy = moments["moment2_xy"].avg
+    def streaming_compare(self, batch_iterator_factory: BatchIteratorFactory):
+        # We will re-use the iterator, so first step is to assert that it is repeatable
+        assert_repeatable_iter_factory(batch_iterator_factory)
 
-        if self.centered:
-            cov_xx = m2xx - m1x[:, None] * m1x[None, :]
-            cov_yy = m2yy - m1y[:, None] * m1y[None, :]
-            cov_xy = m2xy - m1x[:, None] * m1y[None, :]
-        else:
-            cov_xx = m2xx
-            cov_yy = m2yy
-            cov_xy = m2xy
+        # First-pass: calculate moments and get low-bias estimate of the 'xx' and 'yy' terms
+        moments = _calculate_moments(batch_iterator_factory)
+        cov_xx, cov_yy, cov_xy = _moments_to_covs(moments, self.centered)
+        sqrt_m = sqrt(moments["moment1_x"].count)
 
-        return self.distance(cov_xx, cov_yy, cov_xy)
+        # Get SVD of cov_xy; we will then do 'rank-1 updates' to U and V in a second pass
+        u, s, vh = torch.linalg.svd(cov_xy, full_matrices=False)
+
+        # Second-pass: calculate <u @ vh, x @ yT> expectation with x and y excluded from u and v
+        xval_nuc_norm_xy = RunningAverage()
+        for batch_x, batch_y in batch_iterator_factory():
+            if self.centered:
+                batch_x = batch_x - moments["moment1_x"].avg.unsqueeze(0)
+                batch_y = batch_y - moments["moment1_y"].avg.unsqueeze(0)
+            for x, y in zip(batch_x, batch_y):
+                xval_u, _, xval_vh = rank_one_svd_update(u, s, vh, -x / sqrt_m, y / sqrt_m)
+                xval_nuc_norm_xy.update(torch.einsum("ik,kj,i,j->", xval_u, xval_vh, x, y), 1)
+
+        return distance(
+            torch.trace(cov_xx),
+            torch.trace(cov_yy),
+            xval_nuc_norm_xy.avg,
+            scaled=self.scaled,
+        )
