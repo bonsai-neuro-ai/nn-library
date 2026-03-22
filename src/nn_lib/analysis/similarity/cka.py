@@ -1,11 +1,11 @@
 import warnings
 from enum import Enum, auto
-from typing import Iterable, Callable, Optional
+from typing import Callable, Optional
 
 import torch
 
 from nn_lib.analysis.similarity.comparator import StreamingComparator
-from .utils import assert_repeatable_iterable
+from .utils import assert_repeatable_iter_factory, BatchIteratorFactory
 
 KernelFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 
@@ -39,6 +39,8 @@ class HSICEstimator(Enum):
 
 class LinearCKA(StreamingComparator):
     def __init__(self, estimator: HSICEstimator = HSICEstimator.CHUN2025):
+        # TODO - do we want to include an option for the biased estimators by using the batched
+        #  Gram matrix construction?
         if estimator not in {HSICEstimator.CHUN2025, HSICEstimator.SONG2007}:
             warnings.warn(
                 "It's strongly recommended to use either the SONG2007 or CHUN2025 HSIC estimator "
@@ -47,13 +49,9 @@ class LinearCKA(StreamingComparator):
             )
         self.estimator = estimator
 
-    def streaming_compare(
-        self, xy_batches: Iterable[tuple[torch.Tensor, torch.Tensor]]
-    ) -> torch.Tensor:
-        assert_repeatable_iterable(xy_batches)
-
+    def streaming_compare(self, batch_iterator_factory: BatchIteratorFactory) -> torch.Tensor:
         hsic_xx, hsic_yy, hsic_xy = None, None, None
-        for x, y in xy_batches:
+        for x, y in batch_iterator_factory():
             # Initialize from the first batch
             if hsic_xy is None:
                 hsic_xx, hsic_yy, hsic_xy = torch.zeros(3, device=x.device, dtype=x.dtype)
