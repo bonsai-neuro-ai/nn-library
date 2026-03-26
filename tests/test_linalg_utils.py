@@ -3,7 +3,7 @@ import unittest
 import torch
 from torch.testing import assert_close
 
-from nn_lib.utils import rank_one_svd_update
+from nn_lib.utils import rank_one_svd_update, xval_nuc_norm_cross_cov
 
 
 class TestLinalgUtils(unittest.TestCase):
@@ -48,3 +48,25 @@ class TestLinalgUtils(unittest.TestCase):
                     torch.rand(4, 5, dtype=dt),
                     torch.rand(4, 6, dtype=dt),
                 )
+
+    def test_xcov_norm_rank1(self):
+        for dt in [torch.float32, torch.float64]:
+            with self.subTest(msg=f"dtype={dt}"):
+                x = torch.rand(20, 5, dtype=dt)
+                y = torch.rand(20, 6, dtype=dt)
+
+                result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
+                result_rank1 = xval_nuc_norm_cross_cov(x, y, method="rank1")
+
+                assert_close(result_brute_force, result_rank1)
+
+    def test_xcov_norm_ab(self):
+        for dt in [torch.float32, torch.float64]:
+            with self.subTest(msg=f"dtype={dt}"):
+                x = torch.rand(20, 5, dtype=dt)
+                y = torch.rand(20, 6, dtype=dt)
+
+                result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
+                result_ab = xval_nuc_norm_cross_cov(x, y, method="ab")
+
+                assert_close(result_brute_force, result_ab)
