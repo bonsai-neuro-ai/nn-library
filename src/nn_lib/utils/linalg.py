@@ -1,3 +1,5 @@
+from typing import Optional, Literal
+
 import torch
 
 
@@ -10,8 +12,8 @@ def rank_one_svd_update(
     y: torch.Tensor,
     eps: float = 1e-12,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Given matrix M and its singular value decomposition such that M = U @ S @ Vh, efficiently
-    compute the SVD of (M + x @ y.T)
+    """Given matrix the singular value decomposition of some matrix M such that M = U @ S @ Vh,
+    efficiently compute the updated SVD of (M + x @ y.T), i.e. a rank one perturbation to M
     """
     # Ensure S is a 1-D vector of singular values
     if S.ndim == 2 and S.shape[0] == S.shape[1]:
@@ -98,6 +100,111 @@ def rank_one_svd_update(
     return U_new, S_k, V_new.T
 
 
+def xval_nuc_norm_cross_cov(
+    matX: torch.Tensor,
+    matY: torch.Tensor,
+    method: Literal["brute_force", "rank1", "ab"] = "brute_force",
+    k: Optional[int] = None,
+) -> torch.Tensor:
+    """Calculate the cross-validated nuclear norm of the cross-covariance matrix matX.T @ matY / m"""
+    if matX.size(0) != matY.size(0):
+        raise ValueError(
+            f"The number of rows of matX and matY should be the same "
+            f"but got {matX.shape} and {matY.shape}"
+        )
+    if matX.ndim != 2:
+        raise ValueError(f"X must be 2-dimensional")
+    if matY.ndim != 2:
+        raise ValueError(f"Y must be 2-dimensional")
+
+    if method == "brute_force":
+        if k is not None:
+            raise ValueError("Low-rank k argument is not supported in brute-force method")
+        return xval_nuc_norm_cross_cov_brute_force(matX, matY)
+    elif method == "rank1":
+        return xval_nuc_norm_cross_cov_rank1(matX, matY, k=k)
+    elif method == "ab":
+        return xval_nuc_norm_cross_cov_ab(matX, matY, k=k)
+    else:
+        raise ValueError(f"method {method} is not supported")
+
+
+@torch.jit.script
+def xval_nuc_norm_cross_cov_brute_force(matX: torch.Tensor, matY: torch.Tensor) -> torch.Tensor:
+    m = matX.shape[0]
+    xTy = matX.T @ matY
+    vals = []
+    for i in range(m):
+        x, y = matX[i, :], matY[i, :]
+        xcov = xTy - x[:, None] * y[None, :]
+        u, _, vh = torch.linalg.svd(xcov, full_matrices=False)
+        vals.append(y @ (vh.T @ (u.T @ x)))
+    return torch.stack(vals).mean()
+
+
+@torch.jit.script
+def xval_nuc_norm_cross_cov_rank1(
+    matX: torch.Tensor, matY: torch.Tensor, k: Optional[int] = None
+) -> torch.Tensor:
+    m = matX.shape[0]
+    xTy = matX.T @ matY
+    u, s, vh = torch.linalg.svd(xTy, full_matrices=False)
+
+    if k is not None and k < u.size(1):
+        u = u[:, :k]
+        vh = vh[:k, :]
+        s = s[:k]
+
+    vals = []
+    for i in range(m):
+        x, y = matX[i, :], matY[i, :]
+        down_u, _, down_vh = rank_one_svd_update(u, s, vh, -x, y)
+        vals.append(y @ (down_vh.T @ (down_u.T @ x)))
+    return torch.stack(vals).mean()
+
+
+@torch.jit.script
+def inv_sqrt_spd(B: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    """
+    Compute B^{-1/2} for SPD B using eigendecomposition.
+    """
+    evals, evecs = torch.linalg.eigh(B)
+    evals = torch.clamp(evals, min=eps)
+    inv_sqrt = evecs @ torch.diag(evals.rsqrt()) @ evecs.T
+    return inv_sqrt
+
+
+@torch.jit.script
+def xval_nuc_norm_cross_cov_ab(
+    matX: torch.Tensor, matY: torch.Tensor, k: Optional[int] = None, eps: float = 1e-12
+) -> torch.Tensor:
+    m = matX.shape[0]
+    xTy = matX.T @ matY
+    u, s, vh = torch.linalg.svd(xTy, full_matrices=True)
+
+    if k is not None and k < u.size(1):
+        u = u[:, :k]
+        vh = vh[:k, :]
+        s = s[:k]
+
+    alphas = matX @ u  # (m, r)
+    betas = matY @ vh.T  # (m, r)
+
+    r = len(s)
+    diag_s = torch.zeros_like(xTy)
+    diag_s[torch.arange(r), torch.arange(r)] = s
+
+    vals = []
+    for i in range(m):
+        alpha, beta = alphas[i, :], betas[i, :]
+        matM = diag_s - alpha[:, None] @ beta[None, :]
+        matC = inv_sqrt_spd(matM @ matM.T, eps=eps)
+        vals.append(beta @ (matM.T @ (matC @ alpha)))
+    return torch.stack(vals).mean()
+
+
 __all__ = [
+    "inv_sqrt_spd",
     "rank_one_svd_update",
+    "xval_nuc_norm_cross_cov",
 ]
