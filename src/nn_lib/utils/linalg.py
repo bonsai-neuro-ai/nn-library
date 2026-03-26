@@ -103,7 +103,7 @@ def rank_one_svd_update(
 def xval_nuc_norm_cross_cov(
     matX: torch.Tensor,
     matY: torch.Tensor,
-    method: Literal["brute_force", "rank1", "ab"] = "brute_force",
+    method: Literal["brute_force", "rank1", "ab", "orthogonalize"] = "brute_force",
     k: Optional[int] = None,
 ) -> torch.Tensor:
     """Calculate the cross-validated nuclear norm of the cross-covariance matrix matX.T @ matY / m"""
@@ -125,6 +125,8 @@ def xval_nuc_norm_cross_cov(
         return xval_nuc_norm_cross_cov_rank1(matX, matY, k=k)
     elif method == "ab":
         return xval_nuc_norm_cross_cov_ab(matX, matY, k=k)
+    elif method == "orthogonalize":
+        return xval_nuc_norm_cross_cov_orthogonalize(matX, matY, k=k)
     else:
         raise ValueError(f"method {method} is not supported")
 
@@ -200,6 +202,75 @@ def xval_nuc_norm_cross_cov_ab(
         matM = diag_s - alpha[:, None] @ beta[None, :]
         matC = inv_sqrt_spd(matM @ matM.T, eps=eps)
         vals.append(beta @ (matM.T @ (matC @ alpha)))
+    return torch.stack(vals).mean()
+
+
+@torch.jit.script
+def orthogonalize(M: torch.Tensor) -> torch.Tensor:
+    """Approximate orthogonalization of a matrix using a fixed number of Newton-Schulz iterations
+    with carefully chosen coefficients for stability.
+
+    This code is adapted from github.com/modula/modula with the following license:
+
+        Copyright (c) 2024 Jeremy Bernstein
+
+        Permission is hereby granted, free of charge, to any person obtaining a copy of this
+        software and associated documentation files (the "Software"), to deal in the Software
+        without restriction, including without limitation the rights to use, copy, modify, merge,
+        publish, distribute, sublicense, and/or sell copies of the Software, and to permit
+        persons to whom the Software is furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be included in all copies or
+        substantial portions of the Software.
+    """
+
+    abc_list = [
+        (3955 / 1024, -8306 / 1024, 5008 / 1024),
+        (3735 / 1024, -6681 / 1024, 3463 / 1024),
+        (3799 / 1024, -6499 / 1024, 3211 / 1024),
+        (4019 / 1024, -6385 / 1024, 2906 / 1024),
+        (2677 / 1024, -3029 / 1024, 1162 / 1024),
+        (2172 / 1024, -1833 / 1024, 682 / 1024),
+    ]
+
+    transpose = M.shape[1] > M.shape[0]
+    if transpose:
+        M = M.T
+    M = M / torch.linalg.norm(M)
+    for a, b, c in abc_list:
+        A = M.T @ M
+        I = torch.eye(A.shape[0])
+        M = M @ (a * I + b * A + c * A @ A)
+    if transpose:
+        M = M.T
+    return M
+
+
+@torch.jit.script
+def xval_nuc_norm_cross_cov_orthogonalize(
+    matX: torch.Tensor, matY: torch.Tensor, k: Optional[int] = None
+) -> torch.Tensor:
+    m = matX.shape[0]
+    xTy = matX.T @ matY
+    u, s, vh = torch.linalg.svd(xTy, full_matrices=True)
+
+    if k is not None and k < u.size(1):
+        u = u[:, :k]
+        vh = vh[:k, :]
+        s = s[:k]
+
+    alphas = matX @ u  # (m, r)
+    betas = matY @ vh.T  # (m, r)
+
+    r = len(s)
+    diag_s = torch.zeros_like(xTy)
+    diag_s[torch.arange(r), torch.arange(r)] = s
+
+    vals = []
+    for i in range(m):
+        alpha, beta = alphas[i, :], betas[i, :]
+        matM = diag_s - alpha[:, None] @ beta[None, :]
+        vals.append(alpha.T @ orthogonalize(matM) @ beta)
     return torch.stack(vals).mean()
 
 

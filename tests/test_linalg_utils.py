@@ -70,3 +70,15 @@ class TestLinalgUtils(unittest.TestCase):
                 result_ab = xval_nuc_norm_cross_cov(x, y, method="ab")
 
                 assert_close(result_brute_force, result_ab)
+
+    def test_xcov_norm_orthogonalize(self):
+        for dt in [torch.float32, torch.float64]:
+            with self.subTest(msg=f"dtype={dt}"):
+                x = torch.rand(20, 5, dtype=dt)
+                y = torch.rand(20, 6, dtype=dt)
+
+                result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
+                result_orthogonalize = xval_nuc_norm_cross_cov(x, y, method="orthogonalize")
+
+                # NOTE: orthogonalization is not exact, so we use a looser tolerance for this test
+                assert_close(result_brute_force, result_orthogonalize, rtol=3e-3, atol=3e-3)
