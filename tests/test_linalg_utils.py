@@ -27,58 +27,65 @@ class TestLinalgUtils(unittest.TestCase):
         self.assertEqual(updt_u.shape, true_u.shape)
         self.assertEqual(updt_s.shape, true_s.shape)
         self.assertEqual(updt_vh.shape, true_vh.shape)
-        assert_close(updt_u @ updt_u.T, torch.eye(updt_u.shape[0], dtype=x.dtype))
-        assert_close(updt_vh @ updt_vh.T, torch.eye(updt_vh.shape[0], dtype=x.dtype))
+        assert_close(updt_u @ updt_u.T, torch.eye(updt_u.shape[0], dtype=x.dtype, device=x.device))
+        assert_close(
+            updt_vh @ updt_vh.T, torch.eye(updt_vh.shape[0], dtype=x.dtype, device=x.device)
+        )
 
         # Assert SVD worked
         assert_close(full_mat, updt_u @ torch.diag(updt_s) @ updt_vh)
 
     def test_rank1_svd_update_full_rank(self):
         for dt in [torch.float32, torch.float64]:
-            with self.subTest(msg=f"dtype={dt}"):
-                self._test_svd_update_helper(
-                    torch.rand(20, 5, dtype=dt),
-                    torch.rand(20, 6, dtype=dt),
-                )
+            for device in ["cpu", "cuda"]:
+                with self.subTest(msg=f"dtype={dt} device={device}"):
+                    self._test_svd_update_helper(
+                        torch.rand(20, 5, dtype=dt, device=device),
+                        torch.rand(20, 6, dtype=dt, device=device),
+                    )
 
     def test_rank1_svd_update_rank_deficient(self):
         for dt in [torch.float32, torch.float64]:
-            with self.subTest(msg=f"dtype={dt}"):
-                self._test_svd_update_helper(
-                    torch.rand(4, 5, dtype=dt),
-                    torch.rand(4, 6, dtype=dt),
-                )
+            for device in ["cpu", "cuda"]:
+                with self.subTest(msg=f"dtype={dt} device={device}"):
+                    self._test_svd_update_helper(
+                        torch.rand(4, 5, dtype=dt, device=device),
+                        torch.rand(4, 6, dtype=dt, device=device),
+                    )
 
     def test_xcov_norm_rank1(self):
         for dt in [torch.float32, torch.float64]:
-            with self.subTest(msg=f"dtype={dt}"):
-                x = torch.rand(20, 5, dtype=dt)
-                y = torch.rand(20, 6, dtype=dt)
+            for device in ["cpu", "cuda"]:
+                with self.subTest(msg=f"dtype={dt} device={device}"):
+                    x = torch.rand(20, 5, dtype=dt, device=device)
+                    y = torch.rand(20, 6, dtype=dt, device=device)
 
-                result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
-                result_rank1 = xval_nuc_norm_cross_cov(x, y, method="rank1")
+                    result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
+                    result_rank1 = xval_nuc_norm_cross_cov(x, y, method="rank1")
 
-                assert_close(result_brute_force, result_rank1)
+                    assert_close(result_brute_force, result_rank1)
 
     def test_xcov_norm_ab(self):
         for dt in [torch.float32, torch.float64]:
-            with self.subTest(msg=f"dtype={dt}"):
-                x = torch.rand(20, 5, dtype=dt)
-                y = torch.rand(20, 6, dtype=dt)
+            for device in ["cpu", "cuda"]:
+                with self.subTest(msg=f"dtype={dt} device={device}"):
+                    x = torch.rand(20, 5, dtype=dt, device=device)
+                    y = torch.rand(20, 6, dtype=dt, device=device)
 
-                result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
-                result_ab = xval_nuc_norm_cross_cov(x, y, method="ab")
+                    result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
+                    result_ab = xval_nuc_norm_cross_cov(x, y, method="ab")
 
-                assert_close(result_brute_force, result_ab)
+                    assert_close(result_brute_force, result_ab)
 
     def test_xcov_norm_orthogonalize(self):
         for dt in [torch.float32, torch.float64]:
-            with self.subTest(msg=f"dtype={dt}"):
-                x = torch.rand(20, 5, dtype=dt)
-                y = torch.rand(20, 6, dtype=dt)
+            for device in ["cpu", "cuda"]:
+                with self.subTest(msg=f"dtype={dt} device={device}"):
+                    x = torch.rand(20, 5, dtype=dt, device=device)
+                    y = torch.rand(20, 6, dtype=dt, device=device)
 
-                result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
-                result_orthogonalize = xval_nuc_norm_cross_cov(x, y, method="orthogonalize")
+                    result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
+                    result_orthogonalize = xval_nuc_norm_cross_cov(x, y, method="orthogonalize")
 
-                # NOTE: orthogonalization is not exact, so we use a looser tolerance for this test
-                assert_close(result_brute_force, result_orthogonalize, rtol=3e-3, atol=3e-3)
+                    # NOTE: orthogonalization is not exact, so we use a looser tolerance for this test
+                    assert_close(result_brute_force, result_orthogonalize, rtol=3e-3, atol=3e-3)
