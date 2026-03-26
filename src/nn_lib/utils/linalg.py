@@ -48,8 +48,8 @@ def rank_one_svd_update(
     max_sigma = S.abs().max() if r > 0 else torch.zeros_like(S[0])
     tol = max(m, n) * float(eps) * float(max(norm_x, norm_y, max_sigma, 1.0))
 
-    alpha_nonzero = alpha.item() > tol
-    beta_nonzero = beta.item() > tol
+    alpha_nonzero = alpha > tol
+    beta_nonzero = beta > tol
 
     # Build augmented bases U_bar (m x ru) and V_bar (n x rv)
     U_bar_cols = [U]
@@ -239,7 +239,7 @@ def orthogonalize(M: torch.Tensor) -> torch.Tensor:
     M = M / torch.linalg.norm(M)
     for a, b, c in abc_list:
         A = M.T @ M
-        I = torch.eye(A.shape[0])
+        I = torch.eye(A.shape[0], device=M.device, dtype=M.dtype)
         M = M @ (a * I + b * A + c * A @ A)
     if transpose:
         M = M.T
