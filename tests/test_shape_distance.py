@@ -35,7 +35,7 @@ def procrustes_alt(x, y, scaled, centered, cross_validated):
         term_xy = 0.0
         xy = x.T @ y
         for i in range(len(x)):
-            test_x, test_y = x[i:i+1], y[i:i+1]
+            test_x, test_y = x[i : i + 1], y[i : i + 1]
             u, _, vT = torch.linalg.svd(xy - test_x.T @ test_y)
             term_xy += torch.sum(torch.einsum("...i,ik,kj,...j->...", test_x, u, vT, test_y)) / m
     else:
@@ -76,6 +76,7 @@ class TestShapeDistance(unittest.TestCase):
                     self.assertEqual(value.shape, torch.Size([]))
                     orig_value = shape_dist.compare(self.x, self.y)
                     assert_close(value, orig_value)
+
 
 class TestCrossValidatedShapeDistance(unittest.TestCase):
     def setUp(self):
