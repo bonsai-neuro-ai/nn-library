@@ -1,11 +1,10 @@
 from collections import defaultdict
 
 import torch
-from math import sqrt
 
 from nn_lib.analysis.similarity.comparator import StreamingComparator
-from nn_lib.utils import rank_one_svd_update
 from .utils import assert_repeatable_iter_factory, BatchIteratorFactory, RunningAverage
+from nn_lib.utils import xval_nuc_norm_cross_cov
 
 
 def _calculate_moments(batch_iterator_factory: BatchIteratorFactory):
@@ -97,20 +96,23 @@ class CrossValidatedShapeDistance(StreamingComparator):
         # First-pass: calculate moments and get low-bias estimate of the 'xx' and 'yy' terms
         moments = _calculate_moments(batch_iterator_factory)
         cov_xx, cov_yy, cov_xy = _moments_to_covs(moments, self.centered)
-        sqrt_m = sqrt(moments["moment1_x"].count)
+        m = moments["moment1_x"].count
 
-        # Get SVD of cov_xy; we will then do 'rank-1 updates' to U and V in a second pass
-        u, s, vh = torch.linalg.svd(cov_xy, full_matrices=False)
+        # Precompute SVD of xy; this 'global' SVD is then passed into the xval_nuc_norm_cross_cov
+        # function which will calculate 'updated' SVDs.
+        svd = torch.linalg.svd(cov_xy, full_matrices=True)
 
-        # Second-pass: calculate <u @ vh, x @ yT> expectation with x and y excluded from u and v
+        # Second-pass: call xval_nuc_norm_cross_cov per batch, passing in svd for 'global' stats
         xval_nuc_norm_xy = RunningAverage()
         for batch_x, batch_y in batch_iterator_factory():
             if self.centered:
                 batch_x = batch_x - moments["moment1_x"].avg.unsqueeze(0)
                 batch_y = batch_y - moments["moment1_y"].avg.unsqueeze(0)
-            for x, y in zip(batch_x, batch_y):
-                xval_u, _, xval_vh = rank_one_svd_update(u, s, vh, -x / sqrt_m, y / sqrt_m)
-                xval_nuc_norm_xy.update(torch.einsum("ik,kj,i,j->", xval_u, xval_vh, x, y), 1)
+
+            batch_avg_nuc_norm = xval_nuc_norm_cross_cov(
+                batch_x, batch_y, svd_cross_cov=svd, m_total=m, method="ab"
+            )
+            xval_nuc_norm_xy.update(batch_avg_nuc_norm, batch_count=batch_x.shape[0])
 
         return distance(
             torch.trace(cov_xx),
