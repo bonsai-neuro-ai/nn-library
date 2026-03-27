@@ -105,8 +105,16 @@ def xval_nuc_norm_cross_cov(
     matY: torch.Tensor,
     method: Literal["brute_force", "rank1", "ab", "orthogonalize"] = "brute_force",
     k: Optional[int] = None,
+    svd_cross_cov: Optional[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+    m_total: Optional[int] = None,
 ) -> torch.Tensor:
-    """Calculate the cross-validated nuclear norm of the cross-covariance matrix matX.T @ matY / m"""
+    """Calculate the cross-validated nuclear norm of the cross-covariance matrix matX.T @ matY / m .
+
+    If calling this batch-by-batch, a precomputed svd_cross_cov=svd(all_matX.T @ all_matY) must
+    be passed in to ensure that the same 'global' SVD is updated for each item. In other words,
+    batching this calculation requires two passes through the data: one to precompute
+    svd_cross_cov, and another to then call this nuclear norm calculator once per batch.
+    """
     if matX.size(0) != matY.size(0):
         raise ValueError(
             f"The number of rows of matX and matY should be the same "
@@ -117,28 +125,55 @@ def xval_nuc_norm_cross_cov(
     if matY.ndim != 2:
         raise ValueError(f"Y must be 2-dimensional")
 
+    if svd_cross_cov is not None and m_total is None:
+        raise ValueError(
+            f"If svd_cross_cov is provided, m_total must also be provided to ensure correct scaling"
+        )
+    if svd_cross_cov is None and m_total is not None:
+        raise ValueError(f"If m_total is provided, svd_cross_cov is expected to be provided")
+
     if method == "brute_force":
         if k is not None:
             raise ValueError("Low-rank k argument is not supported in brute-force method")
-        return xval_nuc_norm_cross_cov_brute_force(matX, matY)
+        return xval_nuc_norm_cross_cov_brute_force(
+            matX, matY, svd_cross_cov=svd_cross_cov, m_total=m_total
+        )
     elif method == "rank1":
-        return xval_nuc_norm_cross_cov_rank1(matX, matY, k=k)
+        return xval_nuc_norm_cross_cov_rank1(
+            matX, matY, k=k, svd_cross_cov=svd_cross_cov, m_total=m_total
+        )
     elif method == "ab":
-        return xval_nuc_norm_cross_cov_ab(matX, matY, k=k)
+        return xval_nuc_norm_cross_cov_ab(
+            matX, matY, k=k, svd_cross_cov=svd_cross_cov, m_total=m_total
+        )
     elif method == "orthogonalize":
-        return xval_nuc_norm_cross_cov_orthogonalize(matX, matY, k=k)
+        return xval_nuc_norm_cross_cov_orthogonalize(
+            matX, matY, k=k, svd_cross_cov=svd_cross_cov, m_total=m_total
+        )
     else:
         raise ValueError(f"method {method} is not supported")
 
 
 @torch.jit.script
-def xval_nuc_norm_cross_cov_brute_force(matX: torch.Tensor, matY: torch.Tensor) -> torch.Tensor:
+def xval_nuc_norm_cross_cov_brute_force(
+    matX: torch.Tensor,
+    matY: torch.Tensor,
+    svd_cross_cov: Optional[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+    m_total: Optional[int] = None,
+) -> torch.Tensor:
+    if svd_cross_cov is not None:
+        u, s, vh = svd_cross_cov
+        cross_cov = (u * s) @ vh
+        if m_total is None:
+            raise ValueError("If svd_cross_cov is provided, m_total must be as well.")
+    else:
+        m_total = matX.shape[0]
+        cross_cov = matX.T @ matY / m_total
     m = matX.shape[0]
-    xTy = matX.T @ matY
     vals = []
     for i in range(m):
         x, y = matX[i, :], matY[i, :]
-        xcov = xTy - x[:, None] * y[None, :]
+        xcov = cross_cov - x[:, None] * y[None, :] / m_total
         u, _, vh = torch.linalg.svd(xcov, full_matrices=False)
         vals.append(y @ (vh.T @ (u.T @ x)))
     return torch.stack(vals).mean()
@@ -146,11 +181,21 @@ def xval_nuc_norm_cross_cov_brute_force(matX: torch.Tensor, matY: torch.Tensor) 
 
 @torch.jit.script
 def xval_nuc_norm_cross_cov_rank1(
-    matX: torch.Tensor, matY: torch.Tensor, k: Optional[int] = None
+    matX: torch.Tensor,
+    matY: torch.Tensor,
+    k: Optional[int] = None,
+    svd_cross_cov: Optional[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+    m_total: Optional[int] = None,
 ) -> torch.Tensor:
+    if svd_cross_cov is None:
+        cross_cov = matX.T @ matY / matX.shape[0]
+        u, s, vh = torch.linalg.svd(cross_cov, full_matrices=False)
+        m_total = matX.shape[0]
+    else:
+        if m_total is None:
+            raise ValueError("If svd_cross_cov is provided, m_total must be as well.")
+        u, s, vh = svd_cross_cov
     m = matX.shape[0]
-    xTy = matX.T @ matY
-    u, s, vh = torch.linalg.svd(xTy, full_matrices=False)
 
     if k is not None and k < u.size(1):
         u = u[:, :k]
@@ -160,8 +205,8 @@ def xval_nuc_norm_cross_cov_rank1(
     vals = []
     for i in range(m):
         x, y = matX[i, :], matY[i, :]
-        down_u, _, down_vh = rank_one_svd_update(u, s, vh, -x, y)
-        vals.append(y @ (down_vh.T @ (down_u.T @ x)))
+        down_u, _, down_vh = rank_one_svd_update(u, s, vh, -x, y / m_total)
+        vals.append(torch.einsum("i,ik,kj,j->", x, down_u, down_vh, y))
     return torch.stack(vals).mean()
 
 
@@ -178,28 +223,43 @@ def inv_sqrt_spd(B: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
 
 @torch.jit.script
 def xval_nuc_norm_cross_cov_ab(
-    matX: torch.Tensor, matY: torch.Tensor, k: Optional[int] = None, eps: float = 1e-12
+    matX: torch.Tensor,
+    matY: torch.Tensor,
+    k: Optional[int] = None,
+    eps: float = 1e-12,
+    svd_cross_cov: Optional[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+    m_total: Optional[int] = None,
 ) -> torch.Tensor:
+    if svd_cross_cov is None:
+        cross_cov = matX.T @ matY / matX.shape[0]
+        u, s, vh = torch.linalg.svd(cross_cov, full_matrices=True)
+        m_total = matX.shape[0]
+    else:
+        if m_total is None:
+            raise ValueError("If svd_cross_cov is provided, m_total must be as well.")
+        u, s, vh = svd_cross_cov
     m = matX.shape[0]
-    xTy = matX.T @ matY
-    u, s, vh = torch.linalg.svd(xTy, full_matrices=True)
 
     if k is not None and k < u.size(1):
         u = u[:, :k]
         vh = vh[:k, :]
         s = s[:k]
 
-    alphas = matX @ u  # (m, r)
-    betas = matY @ vh.T  # (m, r)
+    alphas = matX @ u
+    betas = matY @ vh.T
+
+    transpose = alphas.shape[1] > betas.shape[1]
+    if transpose:
+        alphas, betas = betas, alphas
 
     r = len(s)
-    diag_s = torch.zeros_like(xTy)
+    diag_s = torch.zeros((alphas.shape[1], betas.shape[1]), device=matX.device, dtype=matX.dtype)
     diag_s[torch.arange(r), torch.arange(r)] = s
 
     vals = []
     for i in range(m):
         alpha, beta = alphas[i, :], betas[i, :]
-        matM = diag_s - alpha[:, None] @ beta[None, :]
+        matM = diag_s - alpha[:, None] @ beta[None, :] / m_total
         matC = inv_sqrt_spd(matM @ matM.T, eps=eps)
         vals.append(beta @ (matM.T @ (matC @ alpha)))
     return torch.stack(vals).mean()
@@ -248,28 +308,38 @@ def orthogonalize(M: torch.Tensor) -> torch.Tensor:
 
 @torch.jit.script
 def xval_nuc_norm_cross_cov_orthogonalize(
-    matX: torch.Tensor, matY: torch.Tensor, k: Optional[int] = None
+    matX: torch.Tensor,
+    matY: torch.Tensor,
+    k: Optional[int] = None,
+    svd_cross_cov: Optional[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+    m_total: Optional[int] = None,
 ) -> torch.Tensor:
+    if svd_cross_cov is None:
+        cross_cov = matX.T @ matY / matX.shape[0]
+        u, s, vh = torch.linalg.svd(cross_cov, full_matrices=True)
+        m_total = matX.shape[0]
+    else:
+        if m_total is None:
+            raise ValueError("If svd_cross_cov is provided, m_total must be as well.")
+        u, s, vh = svd_cross_cov
     m = matX.shape[0]
-    xTy = matX.T @ matY
-    u, s, vh = torch.linalg.svd(xTy, full_matrices=True)
 
     if k is not None and k < u.size(1):
         u = u[:, :k]
         vh = vh[:k, :]
         s = s[:k]
 
-    alphas = matX @ u  # (m, r)
-    betas = matY @ vh.T  # (m, r)
+    alphas = matX @ u
+    betas = matY @ vh.T
 
     r = len(s)
-    diag_s = torch.zeros_like(xTy)
+    diag_s = torch.zeros((alphas.shape[1], betas.shape[1]), device=matX.device, dtype=matX.dtype)
     diag_s[torch.arange(r), torch.arange(r)] = s
 
     vals = []
     for i in range(m):
         alpha, beta = alphas[i, :], betas[i, :]
-        matM = diag_s - alpha[:, None] @ beta[None, :]
+        matM = diag_s - alpha[:, None] @ beta[None, :] / m_total
         vals.append(alpha.T @ orthogonalize(matM) @ beta)
     return torch.stack(vals).mean()
 
@@ -278,4 +348,5 @@ __all__ = [
     "inv_sqrt_spd",
     "rank_one_svd_update",
     "xval_nuc_norm_cross_cov",
+    "orthogonalize",
 ]

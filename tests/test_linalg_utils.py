@@ -62,8 +62,29 @@ class TestLinalgUtils(unittest.TestCase):
 
                     result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
                     result_rank1 = xval_nuc_norm_cross_cov(x, y, method="rank1")
-
                     assert_close(result_brute_force, result_rank1)
+
+                    result_rank1_flipped = xval_nuc_norm_cross_cov(y, x, method="rank1")
+                    assert_close(result_rank1, result_rank1_flipped)
+
+    def test_xcov_norm_rank1_streaming(self):
+        for dt in [torch.float32, torch.float64]:
+            for device in ["cpu", "cuda"]:
+                with self.subTest(msg=f"dtype={dt} device={device}"):
+                    x = torch.rand(20, 5, dtype=dt, device=device)
+                    y = torch.rand(20, 6, dtype=dt, device=device)
+
+                    result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
+                    svd_xy = torch.linalg.svd(x.T @ y / 20, full_matrices=False)
+                    avg = 0
+                    for b_x, b_y in zip(x.reshape(4, 5, 5), y.reshape(4, 5, 6)):
+                        avg += (
+                            xval_nuc_norm_cross_cov(
+                                b_x, b_y, method="rank1", svd_cross_cov=svd_xy, m_total=20
+                            )
+                            / 4
+                        )
+                    assert_close(result_brute_force, avg)
 
     def test_xcov_norm_ab(self):
         for dt in [torch.float32, torch.float64]:
@@ -74,8 +95,29 @@ class TestLinalgUtils(unittest.TestCase):
 
                     result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
                     result_ab = xval_nuc_norm_cross_cov(x, y, method="ab")
-
                     assert_close(result_brute_force, result_ab)
+
+                    result_ab_flipped = xval_nuc_norm_cross_cov(y, x, method="ab")
+                    assert_close(result_ab, result_ab_flipped)
+
+    def test_xcov_norm_ab_streaming(self):
+        for dt in [torch.float32, torch.float64]:
+            for device in ["cpu", "cuda"]:
+                with self.subTest(msg=f"dtype={dt} device={device}"):
+                    x = torch.rand(20, 5, dtype=dt, device=device)
+                    y = torch.rand(20, 6, dtype=dt, device=device)
+
+                    result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
+                    svd_xy = torch.linalg.svd(x.T @ y / 20, full_matrices=True)
+                    avg = 0
+                    for b_x, b_y in zip(x.reshape(4, 5, 5), y.reshape(4, 5, 6)):
+                        avg += (
+                            xval_nuc_norm_cross_cov(
+                                b_x, b_y, method="ab", svd_cross_cov=svd_xy, m_total=20
+                            )
+                            / 4
+                        )
+                    assert_close(result_brute_force, avg)
 
     def test_xcov_norm_orthogonalize(self):
         for dt in [torch.float32, torch.float64]:
@@ -86,6 +128,30 @@ class TestLinalgUtils(unittest.TestCase):
 
                     result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
                     result_orthogonalize = xval_nuc_norm_cross_cov(x, y, method="orthogonalize")
-
                     # NOTE: orthogonalization is not exact, so we use a looser tolerance for this test
                     assert_close(result_brute_force, result_orthogonalize, rtol=3e-3, atol=3e-3)
+
+                    result_orthogonalize_flipped = xval_nuc_norm_cross_cov(
+                        y, x, method="orthogonalize"
+                    )
+                    assert_close(result_orthogonalize, result_orthogonalize_flipped)
+
+    def test_xcov_norm_orthogonalize_streaming(self):
+        for dt in [torch.float32, torch.float64]:
+            for device in ["cpu", "cuda"]:
+                with self.subTest(msg=f"dtype={dt} device={device}"):
+                    x = torch.rand(20, 5, dtype=dt, device=device)
+                    y = torch.rand(20, 6, dtype=dt, device=device)
+
+                    result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
+                    svd_xy = torch.linalg.svd(x.T @ y / 20, full_matrices=True)
+                    avg = 0
+                    for b_x, b_y in zip(x.reshape(4, 5, 5), y.reshape(4, 5, 6)):
+                        avg += (
+                            xval_nuc_norm_cross_cov(
+                                b_x, b_y, method="orthogonalize", svd_cross_cov=svd_xy, m_total=20
+                            )
+                            / 4
+                        )
+                    # NOTE: orthogonalization is not exact, so we use a looser tolerance for this test
+                    assert_close(result_brute_force, avg, rtol=3e-3, atol=3e-3)
