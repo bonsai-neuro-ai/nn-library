@@ -7,14 +7,15 @@ build-backend = "setuptools.build_meta"
 name = "bonsai-nn-library"
 description = "Common PyTorch utilities for research projects on neural networks."
 readme = "README.md"
-requires-python = ">= 3.10"
+requires-python = ">= 3.12"
 version = "0.5.2"
 license = { text = "MIT" }
 authors = [
     { name = "Richard Lange", email = "opensource@bonsai-neuro-ai.com" },
 ]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Development Status :: 1 - Planning",
