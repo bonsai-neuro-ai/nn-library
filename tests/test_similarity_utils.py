@@ -12,7 +12,6 @@ from nn_lib.analysis.similarity.utils import (
     create_gram_matrix_from_batches,
     iter_batches_of_reps,
     check_shapes,
-    RunningAverage,
 )
 
 
@@ -116,20 +115,6 @@ class TestShapeHandling(unittest.TestCase):
 
 
 class TestIteratorUtils(unittest.TestCase):
-    def test_running_average_1(self):
-        values = torch.rand(10)
-        ra = RunningAverage()
-        for v in values:
-            ra.update(v, batch_count=1)
-        assert_close(ra.avg, torch.mean(values))
-
-    def test_running_average_batched(self):
-        values = torch.rand(10)
-        ra = RunningAverage()
-        for v in batched(values, 2):
-            ra.update(sum(v) / len(v), batch_count=2)
-        assert_close(ra.avg, torch.mean(values))
-
     def test_dataloader_repeatable(self):
         x = torch.randn(100, 5)
         y = torch.randn(100, 5)

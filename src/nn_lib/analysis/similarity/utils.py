@@ -11,19 +11,6 @@ BatchIteratorFactory = Callable[
 ]
 
 
-class RunningAverage:
-    def __init__(self):
-        self.avg = None
-        self.count = 0
-
-    def update(self, batch_avg: torch.Tensor, batch_count: int):
-        if self.avg is None:
-            self.avg = batch_avg
-        else:
-            self.avg = self.avg + (batch_avg - self.avg) * batch_count / (self.count + batch_count)
-        self.count += batch_count
-
-
 def prep_conv_layers(
     *feature_maps: torch.Tensor,
     conv_method: Literal["flatten", "window"] = "flatten",
@@ -232,5 +219,4 @@ __all__ = [
     "create_gram_matrix_from_batches",
     "iter_batches_of_reps",
     "prep_conv_layers",
-    "RunningAverage",
 ]
