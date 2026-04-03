@@ -1,15 +1,20 @@
 import time
 from collections import defaultdict
-from typing import assert_never
+from functools import partial
+from pathlib import Path
+from typing import assert_never, Generator
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
+from joblib import Memory
 from torch.nn import functional as F
 
-from nn_lib.utils import xval_nuc_norm_cross_cov
+from nn_lib.analysis.similarity.utils import prep_conv_layers
+from nn_lib.utils import xval_nuc_norm_cross_cov, RunningAverage
+from nn_lib.utils.stats import calculate_moments_batchwise
 
 
 def eye_like(A: torch.Tensor) -> torch.Tensor:
@@ -27,18 +32,15 @@ class DataGenerator:
         self.k = k
         self.proj_x = torch.randn(k, n) / np.sqrt(k)
         self.proj_y = torch.randn(k, n) / np.sqrt(k)
+        self.cov_x = torch.eye(self.n) + self.proj_x.T @ self.proj_x
+        self.cov_y = torch.eye(self.n) + self.proj_y.T @ self.proj_y
+        self.cov_xy = self.proj_x.T @ self.proj_y
 
-    @property
-    def cov_x(self):
-        return torch.eye(self.n) + self.proj_x.T @ self.proj_x
+    def __str__(self):
+        return f"DataGen_n{self.n}_k{self.k}"
 
-    @property
-    def cov_y(self):
-        return torch.eye(self.n) + self.proj_y.T @ self.proj_y
-
-    @property
-    def cov_xy(self):
-        return self.proj_x.T @ self.proj_y
+    def __repr__(self):
+        return self.__str__()
 
     def sample(self, m):
         z = torch.randn(m, self.k)
@@ -50,15 +52,26 @@ class DataGenerator:
 class ConvDataGenerator:
     """Like DataGenerator but where it simulates convolutional feature maps with local correlations"""
 
-    def __init__(self, h, w, n, k, kernel_size=3):
+    def __init__(
+        self, h, w, n, k, kernel_size=3, strategy="flatten", window: int = 1, device="cpu"
+    ):
         self.h = h
         self.w = w
         self.n = n
         self.k = k
         self.kernel_size = kernel_size
         in_dim = k * kernel_size * kernel_size
-        self.proj_x = torch.randn(n, k, kernel_size, kernel_size) / np.sqrt(in_dim)
-        self.proj_y = torch.randn(n, k, kernel_size, kernel_size) / np.sqrt(in_dim)
+        self.device = device
+        self.proj_x = torch.randn(n, k, kernel_size, kernel_size, device=device) / np.sqrt(in_dim)
+        self.proj_y = torch.randn(n, k, kernel_size, kernel_size, device=device) / np.sqrt(in_dim)
+        self.vectorizer = partial(prep_conv_layers, conv_method=strategy, window_size=window)
+        self.flat = "flatten" if strategy == "flatten" else f"window{window}"
+
+    def __str__(self):
+        return f"ConvDataGen_{self.flat}_h{self.h}_w{self.w}_n{self.n}_k{self.k}_kernel{self.kernel_size}"
+
+    def __repr__(self):
+        return self.__str__()
 
     @property
     def cov_x(self):
@@ -91,13 +104,13 @@ class ConvDataGenerator:
         C, H, W = in_shape
         out_channels, _, kh, kw = w.shape
 
-        x = torch.zeros(1, C, H, W)
+        x = torch.zeros(1, C, H, W, device=w.device)
         y = F.conv2d(x, w, stride=stride, padding=padding, dilation=dilation)
 
         M = y.numel()
         N = C * H * W
 
-        B = torch.zeros(M, N)
+        B = torch.zeros(M, N, device=w.device)
 
         for i in range(N):
             basis = torch.zeros_like(x)
@@ -108,50 +121,58 @@ class ConvDataGenerator:
 
         return B
 
-    @staticmethod
-    def conv_operator(weight, out_h, out_w):
-        """
-        weight: (c, kc, kh, kw)
-        Returns: C of shape (c*h*w, kc*(h+kh-1)*(w+kw-1))
-        """
-        c, kc, kh, kw = weight.shape
-        in_h = out_h + kh - 1
-        in_w = out_w + kw - 1
-        ww = F.fold(
-            weight.reshape(c, kc * kh * kw, 1).repeat(1, 1, out_h * out_w), (in_h, in_w), (kh, kw)
-        )
-        pass
-
     def sample(self, m):
-        z = torch.randn(m, self.k, self.h + self.kernel_size - 1, self.w + self.kernel_size - 1)
-        x = torch.randn(m, self.n, self.h, self.w) + F.conv2d(z, self.proj_x)
-        y = torch.randn(m, self.n, self.h, self.w) + F.conv2d(z, self.proj_y)
-        return x, y
+        z = torch.randn(
+            m,
+            self.k,
+            self.h + self.kernel_size - 1,
+            self.w + self.kernel_size - 1,
+            device=self.device,
+        )
+        x = torch.randn(m, self.n, self.h, self.w, device=self.device) + F.conv2d(z, self.proj_x)
+        y = torch.randn(m, self.n, self.h, self.w, device=self.device) + F.conv2d(z, self.proj_y)
+        return self.vectorizer(x, y)
 
 
-def nuc_norm_plugin(x, y):
-    m = x.shape[0]
-    cross_cov = x.T @ y / m
-    return torch.linalg.norm(cross_cov, ord="nuc")
+def batch_on_cuda(
+    *tensors: torch.Tensor, batch_size: int
+) -> Generator[tuple[torch.Tensor, ...], None, None]:
+    i = 0
+    while i < len(tensors[0]):
+        batch = tuple(t[i : i + batch_size].cuda() for t in tensors)
+        yield batch
+        i += batch_size
 
 
-def run_nuc_norm_test(gen: DataGenerator | ConvDataGenerator, method, m):
+def run_nuc_norm_test(gen: DataGenerator | ConvDataGenerator, method, m, uid):
     if method == "true":
         norm = torch.linalg.norm(gen.cov_xy, ord="nuc")
         elapsed = 0.0
     else:
         x, y = gen.sample(m)
-        x, y = x.flatten(start_dim=1).cuda(), y.flatten(start_dim=1).cuda()
+        iter_factory = lambda: batch_on_cuda(
+            x.flatten(start_dim=1), y.flatten(start_dim=1), batch_size=10
+        )
         tstart = time.time()
-        match method:
-            case "plugin":
-                norm = nuc_norm_plugin(x, y)
-            case "LOO[ab]":
-                norm = xval_nuc_norm_cross_cov(x, y, method="ab")
-            case "LOO[ortho]":
-                norm = xval_nuc_norm_cross_cov(x, y, method="orthogonalize")
-            case _:
-                assert_never(method)
+        # first-pass: moment estimation
+        moments = calculate_moments_batchwise(iter_factory())
+        if method == "plugin":
+            norm = torch.linalg.norm(moments["moment2_0_1"].avg, ord="nuc")
+        else:
+            svd = torch.linalg.svd(moments["moment2_0_1"].avg, full_matrices=False)
+            norm = RunningAverage()
+            for bx, by in iter_factory():
+                match method:
+                    case "LOO[ab]":
+                        norm = xval_nuc_norm_cross_cov(
+                            bx, by, method="ab", svd_cross_cov=svd, m_total=m
+                        )
+                    case "LOO[ortho]":
+                        norm = xval_nuc_norm_cross_cov(
+                            bx, by, method="orthogonalize", svd_cross_cov=svd, m_total=m
+                        )
+                    case _:
+                        assert_never(method)
         elapsed = time.time() - tstart
 
     return {
@@ -161,6 +182,7 @@ def run_nuc_norm_test(gen: DataGenerator | ConvDataGenerator, method, m):
         "n": gen.n,
         "rank": gen.k,
         "time": elapsed,
+        "uid": uid,
     }
 
 
@@ -194,18 +216,28 @@ plt.show()
 
 # %%
 
+CONVOLUTIONAL = True
+
 # Generate data with some shared low-rank correlation
 norms = defaultdict(list)
 n_inner = 4
-gen = DataGenerator(n=1000, k=100)
-# gen = ConvDataGenerator(n=64, k=64, h=32, w=32, kernel_size=3)
+gen = (
+    ConvDataGenerator(
+        n=64, k=64, h=16, w=16, kernel_size=3, strategy="window", window=1, device="cuda"
+    )
+    if CONVOLUTIONAL
+    else DataGenerator(n=1000, k=100)
+)
+cache = Memory(Path(".cache") / str(gen))
+run_nuc_norm_test = cache.cache(run_nuc_norm_test, ignore=["gen"])
+
 methods = ["true", "plugin", "LOO[ab]", "LOO[ortho]"]
 results = []
 for m in np.logspace(1, 4, 7).astype(int):
     print("m =", m)
     for method in methods:
         for j in range(n_inner):
-            results.append(run_nuc_norm_test(gen, method, m=m))
+            results.append(run_nuc_norm_test(gen, method, m=m, uid=j))
             if method == "true":
                 break
 df = pd.DataFrame(results)
@@ -216,7 +248,7 @@ true_val = torch.linalg.norm(gen.cov_xy, ord="nuc")
 sns.lineplot(data=df, x="m", y="norm", hue="method")
 plt.xscale("log")
 plt.ylim(0.5 * true_val, 1.5 * true_val)
-plt.savefig(f"nuc_norm_bias_n{gen.n}_k{gen.k}.png")
+plt.savefig(f"nuc_norm_bias_n{gen.n}_k{gen.k}_conv.png")
 plt.show()
 
 
@@ -225,5 +257,5 @@ plt.show()
 sns.lineplot(data=df, x="m", y="time", hue="method")
 plt.xscale("log")
 plt.yscale("log")
-plt.savefig(f"nuc_norm_timing_n{gen.n}_k{gen.k}.png")
+plt.savefig(f"nuc_norm_timing_n{gen.n}_k{gen.k}_conv.png")
 plt.show()
