@@ -25,5 +25,5 @@ class TestLinearCKA(unittest.TestCase):
         for est in HSICEstimator:
             with self.subTest(msg=str(est)):
                 cka = LinearCKA(estimator=est)
-                value = cka.streaming_compare(dl)
+                value = cka.streaming_compare(lambda: dl)
                 self.assertEqual(value.shape, torch.Size([]))
