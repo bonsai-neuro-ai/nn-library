@@ -23,9 +23,19 @@ Or, as a drop-in replacement for `pip`:
 
     uv pip install bonsai-nn-library
 
-## Usage (Python >= 3.10)
+__CUDA versioning note:__ configuring CUDA dependencies for pytorch/nvidia-dali is notoriously 
+tricky. At time of writing this, there are some open PyTorch issues and open PEPs that will 
+someday make life easier. For now, what we have is some hard-coded `nvidia-dali-cuda130` and 
+torch `cu132` dependencies in our`pyproject.toml` file. If you have a different CUDA version, 
+it's possible this will work as-is, or it's possible you will need to modify the `pyproject.
+toml` file to specify the correct versions. See the disclaimer above: we don't guarantee our 
+library will work for everyone on all systems, but if you have a way to improve it we welcome 
+contributions.
 
-Say you want to use one of our "fancy layers" like a low-rank convolution. You can do so like this:
+## Usage
+
+The top-level import is `nn_lib`. Say you want to use one of our "fancy layers" like a low-rank 
+convolution. You can do so like this:
 
 ```python
 from torch import nn
@@ -101,6 +111,9 @@ We use MLFlow to track our experiments. We have a few utilities in `nn_lib.utils
 a bit of boilerplate from our code.
 
 ## Useful thing \#4: Dataset utilities and torchvision wrappers.
+
+__Deprecation warning:__ we have removed the Lightning dependency in favor of pure pytorch + other
+libraries (FFCV / Dali) for fast data loading.
 
 We have implemented some `LightningDataModule` classes for a few standard vision datasets. See
 `nn_lib.datasets`. We've also implemented a few simple helpers for downloading pretrained models

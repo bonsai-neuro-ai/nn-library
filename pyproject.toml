@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 name = "bonsai-nn-library"
 description = "Common PyTorch utilities for research projects on neural networks."
 readme = "README.md"
-requires-python = ">= 3.10"
+requires-python = ">= 3.12"
 version = "0.5.4"
 license = { text = "MIT" }
 authors = [
@@ -25,7 +25,8 @@ dependencies = [
     "jsonargparse",
     "matplotlib",
     "mlflow",
-    "numpy < 2",
+    "numpy",
+    "nvidia-dali-cuda130",
     "pandas",
     "parse",
     "pycocotools",
@@ -35,12 +36,20 @@ dependencies = [
     "scipy",
     "seaborn",
     "tabulate",
-    "torch[opt-einsum]",
+    "torch>=2",
     "torchmetrics",
     "torchvision",
     "tqdm",
 ]
 
+[tool.uv.sources]
+torch = [{ index = "pytorch-cuda" }]
+torchvision = [{ index = "pytorch-cuda" }]
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu132"  # SET CUDA MAJOR.MINOR VERSION HERE
+explicit = true
 
 [project.urls]
 Repository = "https://github.com/bonsai-neuro-ai/nn-library"
