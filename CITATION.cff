@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Lange"
+  given-names: "Richard"
+  orcid: "https://orcid.org/0000-0002-1429-8333"
+- family-names: "Gallegos"
+  given-names: "Nikita"
+title: "BONSAI Neural Network Library"
+version: 0.5.4
+date-released: 2026-01-01
+url: "https://github.com/bonsai-neuro-ai/nn-library"
