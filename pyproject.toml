@@ -14,7 +14,7 @@ authors = [
     { name = "Richard Lange", email = "opensource@bonsai-neuro-ai.com" },
 ]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Development Status :: 1 - Planning",
@@ -53,8 +53,6 @@ explicit = true
 
 [project.urls]
 Repository = "https://github.com/bonsai-neuro-ai/nn-library"
-
-
 
 [tool.black]
 line-length = 100
