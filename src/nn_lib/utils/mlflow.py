@@ -149,9 +149,95 @@ def load_artifact(path: str | Path, run_id: Optional[str] = None) -> object:
     return torch.load(local_path)
 
 
+class mlflow_start_singleton_run(object):
+    """Fancier replacement for mlflow.start_run. Instead of all this:
+
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment(experiment_name)
+        mlflow.enable_async_logging()
+
+        if run_exists(params, ignore):
+            return
+
+        with mlflow.start_run(**kw) as run:
+            mlflow.log_params(flatten_params(params, ignore))
+            try:
+                # do stuff
+            except Exception as e:
+                log_error(e)
+
+    ...instead just do this:
+
+        try:
+            with mlflow_start_singleton_run(params, ignore, experiment_name, tracking_uri, **kw) as run:
+                # do stuff
+        except RunExists:
+            print("skipping!")
+
+    ...and this will provide the following features:
+
+    1. set experiment name and tracking uri if provided (warning: global!)
+    2. check if run exists with these parameters and if so just return it without doing stuff
+    3. configure logging to dump stuff to artifacts (out.log and err.log)
+    4. start the run
+    5. both log params and save as a config.yaml artifact
+
+    Additional kwargs are passed through to mlflow.start_run(). See `search_runs_by_params` for
+    details on how 'params' and 'ignore' interact.
+    """
+
+    _the_run: ActiveRun
+
+    def __init__(
+        self,
+        params: ParamsLike,
+        ignore: NestedKey = None,
+        experiment_name: Optional[str] = None,
+        tracking_uri: Optional[str] = None,
+        **kwargs,
+    ):
+        self._params = params
+        self._ignore = ignore
+        self._tracking_uri = tracking_uri
+        self._experiment_name = experiment_name
+        self._start_run_kwargs = kwargs
+
+    def __enter__(self):
+        if self._tracking_uri is not None:
+            mlflow.set_tracking_uri(self._tracking_uri)
+
+        if self._experiment_name is not None:
+            mlflow.set_experiment(self._experiment_name)
+
+        mlflow.config.enable_async_logging()
+
+        matching_runs: list[Run] = search_runs_by_params(
+            params=self._params, finished_only=True, ignore=self._ignore, output_format="list"
+        )
+
+        if matching_runs:
+            raise RunExists(matching_runs[0], "Run already exists with the specified parameters")
+        else:
+            self._the_run = mlflow.start_run(**self._start_run_kwargs)
+            self._the_run.__enter__()
+            mlflow.log_params(flatten_params(self._params, ignore=self._ignore))
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # If there was an error, log the error as an artifact
+        if self._the_run is not None:
+            if exc_val is not None:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    local_file = Path(tmpdir) / "error.log"
+                    with open(local_file, "w") as f:
+                        traceback.print_exception(exc_type, exc_val, exc_tb, file=f)
+                    mlflow.log_artifact(local_file, run_id=self._the_run.info.run_id)
+            self._the_run.__exit__(exc_type, exc_val, exc_tb)
+
+
 __all__ = [
     "load_artifact",
     "log_flattened_params",
+    "mlflow_start_singleton_run",
     "save_as_artifact",
     "search_runs_by_params",
     "search_single_run_by_params",
