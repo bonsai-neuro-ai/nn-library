@@ -1,13 +1,15 @@
+from typing import Literal
+
 import torch
 
 from nn_lib.analysis.similarity.comparator import StreamingComparator
-from .utils import assert_repeatable_iter_factory, BatchIteratorFactory
 from nn_lib.utils import (
     xval_nuc_norm_cross_cov,
     RunningAverage,
     calculate_moments_batchwise,
     moments_to_covs,
 )
+from .utils import assert_repeatable_iter_factory, BatchIteratorFactory
 
 
 def distance(
@@ -49,9 +51,15 @@ class ShapeDistance(StreamingComparator):
 
 
 class CrossValidatedShapeDistance(StreamingComparator):
-    def __init__(self, centered: bool, scaled: bool):
+    def __init__(
+        self,
+        centered: bool,
+        scaled: bool,
+        xval_method: Literal["brute_force", "rank1", "orthogonalize", "ab"] = "orthogonalize",
+    ):
         self.centered = centered
         self.scaled = scaled
+        self.method = xval_method
 
     def streaming_compare(self, batch_iterator_factory: BatchIteratorFactory):
         # We will re-use the iterator, so first step is to assert that it is repeatable
@@ -74,7 +82,7 @@ class CrossValidatedShapeDistance(StreamingComparator):
                 batch_y = batch_y - moments["moment1_1"].avg.unsqueeze(0)
 
             batch_avg_nuc_norm = xval_nuc_norm_cross_cov(
-                batch_x, batch_y, svd_cross_cov=svd, m_total=m, method="ab"
+                batch_x, batch_y, svd_cross_cov=svd, m_total=m, method=self.method
             )
             xval_nuc_norm_xy.update(batch_avg_nuc_norm, batch_count=batch_x.shape[0])
 
