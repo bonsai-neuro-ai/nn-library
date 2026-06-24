@@ -9,7 +9,7 @@ from typing import (
     Generator,
 )
 
-from jsonargparse import Namespace as JSONNamespace, strip_meta
+from jsonargparse import Namespace as JSONNamespace
 
 ParamsLike = Union[dict, Namespace, JSONNamespace]
 NestedKey = Union[None, str, list[str], dict[str, "NestedKey"]]

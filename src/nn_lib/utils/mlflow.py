@@ -1,15 +1,27 @@
 import tempfile
+import traceback
 from pathlib import Path
-from typing import Union, Optional, Any
+from typing import Union, Optional, Any, Literal
 
 import mlflow
 import pandas as pd
 import torch
+from mlflow import ActiveRun
 from mlflow.entities import Run
 
 from .cli import ParamsLike, NestedKey, flatten_params
 
 RunOrURI = Union[pd.Series, Run, str, Path]
+
+
+class RunExists(Exception):
+    def __init__(self, run: Run, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.run = run
+
+
+class RunDoesNotExist(Exception):
+    pass
 
 
 def log_flattened_params(params: ParamsLike, ignore: NestedKey = None):
@@ -19,34 +31,29 @@ def log_flattened_params(params: ParamsLike, ignore: NestedKey = None):
     mlflow.log_params(flatten_params(params, ignore=ignore))
 
 
-def search_runs_by_params(
-    experiment_name: str,
+def _quote_value(val: Any):
+    val = str(val)
+    has_single_quote = "'" in val
+    has_double_quote = '"' in val
+    if has_single_quote and has_double_quote:
+        # Todo: figure out how to escape characters in values. MLFlow docs seem to imply it
+        #  should be supported, but I can't get it to work.
+        raise ValueError(
+            "Parameter value containing both single and double quotes will be a problem "
+            "for MLFlow filter strings"
+        )
+    if has_single_quote:
+        return f'"{val}"'
+    else:
+        return f"'{val}'"
+
+
+def build_filter_string(
     params: Optional[ParamsLike] = None,
     tags: Optional[ParamsLike] = None,
-    tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
     ignore: NestedKey = None,
-) -> pd.DataFrame:
-    """Query the MLflow server for runs in the specified experiment that match the given
-    parameters (which will be flattened if they aren't already). Keys in `ignore` will be ignored.
-    """
-
-    def _quote_value(val: Any):
-        val = str(val)
-        has_single_quote = "'" in val
-        has_double_quote = '"' in val
-        if has_single_quote and has_double_quote:
-            # Todo: figure out how to escape characters in values. MLFlow docs seem to imply it
-            #  should be supported, but I can't get it to work.
-            raise ValueError(
-                "Parameter value containing both single and double quotes will be a problem "
-                "for MLFlow filter strings"
-            )
-        if has_single_quote:
-            return f'"{val}"'
-        else:
-            return f"'{val}'"
-
+) -> str:
     query_parts = []
     if params is not None:
         flattened_params = flatten_params(params, ignore)
@@ -64,10 +71,36 @@ def search_runs_by_params(
         )
     if finished_only:
         query_parts.append("status = 'FINISHED'")
-    query_string = " and ".join(query_parts)
+    return " and ".join(query_parts)
+
+
+def search_runs_by_params(
+    experiment_name: Optional[str | list[str]] = None,
+    params: Optional[ParamsLike] = None,
+    tags: Optional[ParamsLike] = None,
+    tracking_uri: Optional[Union[str, Path]] = None,
+    finished_only: bool = True,
+    ignore: NestedKey = None,
+    output_format: Literal["pandas", "list"] = "pandas",
+) -> list[Run] | pd.DataFrame:
+    """Query the MLflow server for runs in the specified experiment that match the given
+    parameters (which will be flattened if they aren't already). Keys in `ignore` will be ignored.
+    """
+    query_string = build_filter_string(params, tags, finished_only, ignore)
     if tracking_uri:
         mlflow.set_tracking_uri(tracking_uri)
-    return mlflow.search_runs(experiment_names=[experiment_name], filter_string=query_string)
+
+    if experiment_name is not None:
+        if isinstance(experiment_name, str):
+            experiment_name = [experiment_name]
+        elif isinstance(experiment_name, list):
+            experiment_name = experiment_name
+        else:
+            raise ValueError("`experiment_name` must be a string or a list of strings")
+
+    return mlflow.search_runs(
+        experiment_names=experiment_name, filter_string=query_string, output_format=output_format
+    )
 
 
 def search_single_run_by_params(
@@ -77,16 +110,18 @@ def search_single_run_by_params(
     tracking_uri: Optional[Union[str, Path]] = None,
     finished_only: bool = True,
     ignore: NestedKey = None,
-) -> pd.Series:
+) -> Run:
     """Query the MLflow server for runs in the specified experiment that match the given parameters.
     If exactly one run is found, return it. If no runs or multiple runs are found, raise an error.
     """
-    df = search_runs_by_params(experiment_name, params, tags, tracking_uri, finished_only, ignore)
-    if len(df) == 0:
-        raise ValueError("No runs found with the specified parameters")
-    elif len(df) > 1:
-        raise ValueError("Multiple runs found with the specified parameters")
-    return df.iloc[0]
+    runs = search_runs_by_params(
+        experiment_name, params, tags, tracking_uri, finished_only, ignore, output_format="list"
+    )
+    if len(runs) == 0:
+        raise RunDoesNotExist("No runs found with the specified parameters")
+    elif len(runs) > 1:
+        raise RunExists(runs[0], "Multiple runs found with the specified parameters")
+    return runs[0]
 
 
 def save_as_artifact(obj: object, path: str | Path, run_id: Optional[str] = None):
@@ -120,4 +155,6 @@ __all__ = [
     "save_as_artifact",
     "search_runs_by_params",
     "search_single_run_by_params",
+    "RunExists",
+    "RunDoesNotExist",
 ]
