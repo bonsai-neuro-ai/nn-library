@@ -13,12 +13,8 @@ from joblib import Memory
 from torch.nn import functional as F
 
 from nn_lib.analysis.similarity.utils import prep_conv_layers
-from nn_lib.utils import xval_nuc_norm_cross_cov, RunningAverage
+from nn_lib.utils import xval_nuc_norm_cross_cov, RunningAverage, eye_like
 from nn_lib.utils.stats import calculate_moments_batchwise
-
-
-def eye_like(A: torch.Tensor) -> torch.Tensor:
-    return torch.eye(A.shape[0], device=A.device, dtype=A.dtype)
 
 
 class DataGenerator:

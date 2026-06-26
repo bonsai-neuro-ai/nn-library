@@ -2,6 +2,9 @@ from typing import Optional, Literal
 
 import torch
 
+def eye_like(a: torch.Tensor) -> torch.Tensor:
+    return torch.eye(a.shape[0], device=a.device, dtype=a.dtype)
+
 
 @torch.jit.script
 def rank_one_svd_update(
@@ -345,6 +348,7 @@ def xval_nuc_norm_cross_cov_orthogonalize(
 
 
 __all__ = [
+    "eye_like",
     "inv_sqrt_spd",
     "rank_one_svd_update",
     "xval_nuc_norm_cross_cov",
