@@ -342,8 +342,8 @@ def xval_nuc_norm_cross_cov_orthogonalize(
     vals = []
     for i in range(m):
         alpha, beta = alphas[i, :], betas[i, :]
-        matM = diag_s - alpha[:, None] @ beta[None, :] / m_total
-        vals.append(alpha.T @ orthogonalize(matM) @ beta)
+        matM = diag_s - torch.einsum("...i,...j->...ij", alpha, beta) / m_total
+        vals.append(torch.einsum("...i,...ij,...j->...", alpha, orthogonalize(matM), beta))
     return torch.stack(vals).mean()
 
 
