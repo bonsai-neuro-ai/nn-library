@@ -1,5 +1,7 @@
 import torch
 
+from nn_lib.utils import RunningAverage, eye_like
+
 
 def safe_linalg_lstsq(
     a: torch.Tensor, b: torch.Tensor, symmetric: bool = False, rcond=1e-6, eps=1e-15
@@ -52,56 +54,58 @@ def safe_regression(
 
 
 class StreamingLinearRegression(object):
-    def __init__(
-        self,
-        n_x: int,
-        n_y: int,
-        bias: bool = True,
-        device: str | torch.device = "cpu",
-    ):
-        self.n = 0
-        self.n_x = n_x
-        self.n_y = n_y
-        self.bias = bias
-        self.mean_x = torch.zeros(n_x, device=device)
-        self.mean_y = torch.zeros(n_y, device=device)
-        self.xtx = torch.zeros((n_x, n_x), device=device)
-        self.xty = torch.zeros((n_x, n_y), device=device)
+    def __init__(self):
+        self._mean_x: RunningAverage[torch.Tensor] = RunningAverage()
+        self._mean_y: RunningAverage[torch.Tensor] = RunningAverage()
+        self._xtx: RunningAverage[torch.Tensor] = RunningAverage()
+        self._xty: RunningAverage[torch.Tensor] = RunningAverage()
 
-    def reset(self) -> None:
-        self.n = 0
-        self.mean_x.zero_()
-        self.mean_y.zero_()
-        self.xtx.zero_()
-        self.xty.zero_()
+    @property
+    def mean_x(self) -> torch.Tensor:
+        if self._mean_x.avg is None:
+            raise ValueError("No batches have been added yet. Call add_batch() first.")
+        return self._mean_x.avg
+
+    @property
+    def mean_y(self) -> torch.Tensor:
+        if self._mean_y.avg is None:
+            raise ValueError("No batches have been added yet. Call add_batch() first.")
+        return self._mean_y.avg
+
+    @property
+    def xtx(self) -> torch.Tensor:
+        if self._xtx.avg is None:
+            raise ValueError("No batches have been added yet. Call add_batch() first.")
+        return self._xtx.avg
+
+    @property
+    def xty(self) -> torch.Tensor:
+        if self._xty.avg is None:
+            raise ValueError("No batches have been added yet. Call add_batch() first.")
+        return self._xty.avg
 
     @torch.no_grad()
     def add_batch(self, from_data: torch.Tensor, to_data: torch.Tensor) -> None:
         batch_size = from_data.size(0)
-        self.n += batch_size
-
-        # Update running means only if bias is enabled (otherwise, behaves as if means=0)
-        if self.bias:
-            self.mean_x += (from_data.sum(dim=0) - batch_size * self.mean_x) / self.n
-            self.mean_y += (to_data.sum(dim=0) - batch_size * self.mean_y) / self.n
-
-        # Update running-average products A^T A and A^T B
-        batch_a = torch.einsum("bi,bj->ij", from_data, from_data)
-        batch_b = torch.einsum("bi,bj->ij", from_data, to_data)
-        self.xtx += (batch_a - batch_size * self.xtx) / self.n
-        self.xty += (batch_b - batch_size * self.xty) / self.n
+        self._mean_x.update(torch.mean(from_data, dim=0), batch_size)
+        self._mean_y.update(torch.mean(to_data, dim=0), batch_size)
+        self._xtx.update(torch.einsum("bi,bj->ij", from_data, from_data) / batch_size, batch_size)
+        self._xty.update(torch.einsum("bi,bj->ij", from_data, to_data) / batch_size, batch_size)
 
     @torch.no_grad()
-    def solve(self, ridge: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
-        """Calculate weights w and bias b from batch statistics added so far."""
-        if self.bias:
+    def solve(self, bias: bool = True, ridge: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
+        """Calculate weights w and bias b from batch statistics added so far. If 'bias' is True,"""
+        if bias:
             ata = self.xtx - self.mean_x[:, None] @ self.mean_x[None, :]
             atb = self.xty - self.mean_x[:, None] @ self.mean_y[None, :]
+
+            w = safe_linalg_lstsq(ata + ridge * eye_like(ata), atb)
+            b = self.mean_y - self.mean_x @ w
         else:
             ata = self.xtx
             atb = self.xty
 
-        w = safe_linalg_lstsq(ata + ridge * torch.eye(self.n_x, device=ata.device), atb)
-        b = self.mean_y - self.mean_x @ w
+            w = safe_linalg_lstsq(ata + ridge * eye_like(ata), atb)
+            b = torch.zeros_like(self.mean_y)
 
         return w, b

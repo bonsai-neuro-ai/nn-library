@@ -74,29 +74,28 @@ class TestSafeLstsq(unittest.TestCase):
 class TestStreamingRegression(unittest.TestCase):
     def test_batch_updates(self):
         for d_ in ["cpu", "cuda"]:
-            for b_ in [False, True]:
-                for r_ in [None, 2]:
-                    with self.subTest(f"device={d_} bias={b_} rank={r_}"):
-                        x, y, true_w, true_b, x_test, y_test = _generate_data(
-                            100, 10, 10, 5, bias=b_, device=d_, rank=r_
-                        )
+            for r_ in [None, 2]:
+                with self.subTest(f"device={d_} rank={r_}"):
+                    x, y, true_w, true_b, x_test, y_test = _generate_data(
+                        100, 10, 10, 5, bias=True, device=d_, rank=r_
+                    )
 
-                        # Add data to slr1 in 10 batches of 10 data points each
-                        slr1 = StreamingLinearRegression(n_x=10, n_y=5, device=d_, bias=b_)
-                        for i in range(0, x.shape[0], 10):
-                            x_batch = x[i : i + 10]
-                            y_batch = y[i : i + 10]
-                            slr1.add_batch(x_batch, y_batch)
+                    # Add data to slr1 in 10 batches of 10 data points each
+                    slr1 = StreamingLinearRegression()
+                    for i in range(0, x.shape[0], 10):
+                        x_batch = x[i : i + 10]
+                        y_batch = y[i : i + 10]
+                        slr1.add_batch(x_batch, y_batch)
 
-                        # Add data to slr2 in 1 batch of 100 data points
-                        slr2 = StreamingLinearRegression(n_x=10, n_y=5, device=d_, bias=b_)
-                        slr2.add_batch(x, y)
+                    # Add data to slr2 in 1 batch of 100 data points
+                    slr2 = StreamingLinearRegression()
+                    slr2.add_batch(x, y)
 
-                        # Assert that the tensors in slr1 and slr2 are the same
-                        torch.testing.assert_close(slr1.xtx, slr2.xtx)
-                        torch.testing.assert_close(slr1.xty, slr2.xty)
-                        torch.testing.assert_close(slr1.mean_x, slr2.mean_x)
-                        torch.testing.assert_close(slr1.mean_y, slr2.mean_y)
+                    # Assert that the tensors in slr1 and slr2 are the same
+                    torch.testing.assert_close(slr1.xtx, slr2.xtx)
+                    torch.testing.assert_close(slr1.xty, slr2.xty)
+                    torch.testing.assert_close(slr1.mean_x, slr2.mean_x)
+                    torch.testing.assert_close(slr1.mean_y, slr2.mean_y)
 
     def test_streaming_regression_batchwise_matches_lstsq(self):
         for d_ in ["cpu", "cuda"]:
@@ -108,12 +107,12 @@ class TestStreamingRegression(unittest.TestCase):
                                 100, 10, 10, 5, bias=b_, device=d_, rank=r_
                             )
 
-                            slr = StreamingLinearRegression(n_x=10, n_y=5, device=d_, bias=b_)
+                            slr = StreamingLinearRegression()
                             for i in range(0, x.shape[0], 10):
                                 x_batch = x[i : i + 10]
                                 y_batch = y[i : i + 10]
                                 slr.add_batch(x_batch, y_batch)
-                            w, b = slr.solve(ridge=ridge_)
+                            w, b = slr.solve(bias=b_, ridge=ridge_)
 
                             # Check that the solution matches lstsq
                             w2, b2 = safe_regression(x, y, bias=b_, ridge=ridge_)
