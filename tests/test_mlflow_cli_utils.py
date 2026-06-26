@@ -7,8 +7,7 @@ import jsonargparse
 import mlflow
 
 from nn_lib.utils import search_single_run_by_params, log_params_and_config
-from nn_lib.utils.mlflow_cli import save_as_artifact, load_artifact, flatten_params
-
+from nn_lib.utils.mlflow_cli import save_as_artifact, load_artifact, flatten_params, run_has_params
 
 class DummyBase(object):
     pass
@@ -25,7 +24,7 @@ class DummySubclassB(DummyBase):
 class TestMLFlowUtils(unittest.TestCase):
     def setUp(self):
         self.tempdir = TemporaryDirectory()
-        self.uri = os.path.abspath(os.path.join(self.tempdir.name, "mlruns"))
+        self.uri = os.path.abspath(os.path.join("sqlite:///", self.tempdir.name, "mlflow.db"))
         mlflow.set_tracking_uri(self.uri)
         mlflow.set_experiment("test_experiment")
 
@@ -61,6 +60,43 @@ class TestMLFlowUtils(unittest.TestCase):
             self.assertTrue((Path(mlflow.active_run().info.artifact_uri) / "config.yaml").exists())
         the_run = search_single_run_by_params(experiment_name="test_experiment", params=args)
         self.assertEqual(the_run.info.run_id, run_id)
+
+    def test_stored_run_has_params(self):
+        params = jsonargparse.Namespace(a=1, b=2, c=jsonargparse.Namespace(d=3, e=4))
+        with mlflow.start_run() as run:
+            mlflow.log_params(flatten_params(params))
+
+        run = mlflow.get_run(run_id=run.info.run_id)
+        self.assertTrue(run_has_params(run, params))
+
+        params.b = 3
+        self.assertFalse(run_has_params(run, params))
+
+
+    def test_stored_run_has_params_subset(self):
+        params = jsonargparse.Namespace(a=1, b=2, c=jsonargparse.Namespace(d=3, e=4))
+        with mlflow.start_run() as run:
+            mlflow.log_params(flatten_params(params))
+
+        params.pop('c')
+        run = mlflow.get_run(run_id=run.info.run_id)
+        self.assertTrue(run_has_params(run, params))
+
+        params.b = 3
+        self.assertFalse(run_has_params(run, params))
+
+    def test_stored_run_has_params_skip(self):
+        params = jsonargparse.Namespace(a=1, b=2, c=jsonargparse.Namespace(d=3, e=4))
+        with mlflow.start_run() as run:
+            mlflow.log_params(flatten_params(params))
+
+        params.b = 10
+        params.c.d = 10
+        run = mlflow.get_run(run_id=run.info.run_id)
+        self.assertFalse(run_has_params(run, params))
+        self.assertFalse(run_has_params(run, params, skip_keys=["c.d"]))
+        self.assertFalse(run_has_params(run, params, skip_keys=["b"]))
+        self.assertTrue(run_has_params(run, params, skip_keys=["b", "c.d"]))
 
 
 class TestCLIUtils(unittest.TestCase):

@@ -1,4 +1,5 @@
 import tempfile
+import traceback
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Union, Optional, Any, Literal, Iterable, Generator
@@ -23,7 +24,9 @@ class RunDoesNotExist(Exception):
 
 
 @contextmanager
-def open_mlflow_artifact_file(path: Union[str, Path], mode: str = "w", run_id: Optional[str] = None):
+def open_mlflow_artifact_file(
+    path: Union[str, Path], mode: str = "w", run_id: Optional[str] = None
+):
     with tempfile.TemporaryDirectory() as tmpdir:
         local_file = Path(tmpdir) / path
         with open(local_file, mode) as f:
@@ -125,6 +128,20 @@ def search_single_run_by_params(
     elif len(runs) > 1:
         raise RunExists(runs[0], "Multiple runs found with the specified parameters")
     return runs[0]
+
+
+def run_has_params(run: Run, params: Namespace, skip_keys: Optional[Iterable[str]] = None) -> bool:
+    """Check if a Run has parameters. This provides an alternative to 'search_runs_by_params' where
+    runs can be pre-fetched from the MLflow server and compared in memory to params.
+    """
+
+    run_params = run.data.params
+    for k, v in _iter_params_skip(params, skip_keys):
+        # Internally, mlflow wraps all params in a str() call, so we need to check equality vs
+        # the stringified param (which could be any data type). See mlflow.log_params for reference.
+        if k not in run_params or run_params[k] != str(v):
+            return False
+    return True
 
 
 def save_as_artifact(obj: object, path: str | Path, run_id: Optional[str] = None):
@@ -253,10 +270,11 @@ def auto_cli_mlflow_job(
     parser.add_argument("--dry_run", action="store_true")
     args = parser.parse_args()
 
-    # Between the config file and default args, we should now have a record of all relevant
-    # parameters and can get rid of the pointer to the config file itself.
+    # All args that are not passed to the run_fn must be popped. A combined config will be
+    # written to a file. Popping the 'config' field here means that we're not storing the path to
+    # whatever partial config file may have been used as input to the script.
     args.pop("config")
-
+    dry_run = args.pop("dry_run")
     mlflow.set_tracking_uri(args.pop("mlflow_tracking_uri"))
     mlflow.set_experiment(args.pop("mlflow_experiment"))
 
@@ -266,32 +284,61 @@ def auto_cli_mlflow_job(
     if log_system_metrics:
         mlflow.config.enable_system_metrics_logging()
 
-    if deduplicate:
-        existing = search_runs_by_params(
-            params=args,
-            finished_only=False,  # TODO skip RUNNING too
-            skip_keys=ignore_keys_dedup,
-            output_format="list"
-        )
-        if len(existing) > 0:
-            print("Run already exists or is in progress. Skipping.")
-            exit(0)
-
-    # In 'dry-run' mode, we just parse args and check if a job *should* run. In dry-run mode,
-    # if the exit code is 0, that indicates 'success' and the job is done. If the exit code is 1,
-    # the job should be run for real. This means a shell script can do (e.g. with Slurm)
-    #
-    #   python my_script.py  $ARGS--dry-run || srun python my_script.py $ARGS
-    #
-    # so that the script is quickly-checked and then queued for running only if it needs running.
-    if args.pop("dry_run"):
-        exit(1)
-
     fn_args_instantiated = parser.instantiate(args)
-    with mlflow.start_run():
-        log_params_and_config(args, parser)
-        run_fn(**fn_args_instantiated.as_dict())
+    try:
+        with fancy_start_run(args, deduplicate, ignore_keys_dedup):
+            log_params_and_config(args, parser)
+            run_fn(**fn_args_instantiated.as_dict())
+    except RunExists:
+        if dry_run:
+            # exit with status 1 so that shell scripts can use the
+            #     python script.py $ARGS --dry_run || srun python script.py $ARGS
+            # pattern
+            exit(1)
 
+
+class fancy_start_run(object):
+    def __init__(
+        self,
+        args: Namespace,
+        deduplicate: bool,
+        ignore_keys_dedup: Optional[Iterable[str]] = None,
+        **start_run_kwargs,
+    ):
+        self._args = args
+        self._deduplicate = deduplicate
+        self._ignore_keys_dedup = ignore_keys_dedup
+        self._start_run_kwargs = start_run_kwargs
+
+    def __enter__(self):
+        if self._deduplicate:
+            existing: list[Run] = search_runs_by_params(
+                params=self._args,
+                finished_only=False,  # TODO skip RUNNING too
+                skip_keys=self._ignore_keys_dedup,
+                output_format="list",
+            )
+            if len(existing) > 0:
+                raise RunExists(existing[0])
+
+        # These next two lines are 'as if' we've done `with mlflow.start_run() as self._the_run:`
+        # but we will handle the exiting of the `with` in our own __exit__ function.
+        self._the_run = mlflow.start_run(**self._start_run_kwargs)
+        self._the_run.__enter__()
+
+        # --- starting here it's as-if we're inside the 'with mlflow.start_run' block ---
+        return self._the_run
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # If there was an error, log the error as an artifact
+        if self._the_run is not None:
+            if exc_val is not None:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    local_file = Path(tmpdir) / "error.log"
+                    with open(local_file, "w") as f:
+                        traceback.print_exception(exc_type, exc_val, exc_tb, file=f)
+                    mlflow.log_artifact(local_file, run_id=self._the_run.info.run_id)
+            self._the_run.__exit__(exc_type, exc_val, exc_tb)
 
 
 __all__ = [
