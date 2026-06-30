@@ -9,7 +9,7 @@
 # Run this manually (e.g. on the lab server, where CUDA is available) after committing
 # changes you want reflected in the README badges, then commit the updated SVGs.
 #
-# Usage: scripts/update_coverage_badges.sh
+# Usage: DATA_ROOT=/data/datasets scripts/update_coverage_badges.sh
 set -uo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
