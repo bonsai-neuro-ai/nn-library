@@ -42,6 +42,13 @@ dependencies = [
     "tqdm",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "coverage",
+    "coverage-badge",
+    "interrogate",
+]
+
 [tool.uv.sources]
 torch = [{ index = "pytorch-cuda" }]
 torchvision = [{ index = "pytorch-cuda" }]
@@ -56,3 +63,8 @@ Repository = "https://github.com/bonsai-neuro-ai/nn-library"
 
 [tool.black]
 line-length = 100
+
+[tool.interrogate]
+fail-under = 50
+verbose = 1
+exclude = ["dist", "build", "tests", "demos", "scripts"]

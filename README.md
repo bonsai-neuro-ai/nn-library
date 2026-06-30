@@ -1,5 +1,8 @@
 # NN-Library
 
+![Test coverage](badges/coverage.svg)
+![Docstring coverage](badges/interrogate_badge.svg)
+
 We in the [BONSAI Lab](https://bonsai-neuro-ai.com) do research on neural networks, among other 
 things, that requires loading/training/reconfiguring neural network models. This library is a 
 work-in-progress suite of in-house tools to address some pain-points we've encountered in our 
@@ -133,3 +136,13 @@ See `nn_lib.analysis.ntk` for some neural tangent kernel utilities.
 
 * lightning training and overly-complex CLI utilities. Some straggler files might still need to be
   cleaned up.
+
+## Test and documentation coverage
+
+We track test coverage (via `coverage.py`) and docstring coverage (via `interrogate`) for the
+`badges/coverage.svg` and `badges/interrogate_badge.svg` badges at the top of this file. Since the
+test suite requires CUDA, these aren't run in GitHub CI — instead, regenerate them locally (e.g. on
+the lab server) after making changes and commit the updated SVGs:
+
+    uv sync --extra dev
+    scripts/update_coverage_badges.sh
