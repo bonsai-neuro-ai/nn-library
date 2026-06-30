@@ -20,7 +20,6 @@ trap cleanup EXIT
 echo "==> Cloning from latest GitHub main branch into $tmpdir..."
 git clone https://github.com/bonsai-neuro-ai/nn-library "$tmpdir" || exit 1
 cd "$tmpdir" || exit 1
-git fetch origin coverage && git checkout origin/coverage || exit 1
 
 mkdir -p badges
 status=0
