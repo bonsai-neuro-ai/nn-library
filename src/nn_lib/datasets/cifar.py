@@ -14,7 +14,7 @@ class CIFAR10DataModule(TorchvisionDataModuleBase):
         return CIFAR10(
             self.data_dir,
             train=True,
-            download=True,
+            download=False,
             transform=transform,
             target_transform=target_transform,
         )
@@ -25,7 +25,7 @@ class CIFAR10DataModule(TorchvisionDataModuleBase):
         return CIFAR10(
             self.data_dir,
             train=False,
-            download=True,
+            download=False,
             transform=transform,
             target_transform=target_transform,
         )
@@ -43,7 +43,7 @@ class CIFAR100DataModule(TorchvisionDataModuleBase):
         return CIFAR100(
             self.data_dir,
             train=True,
-            download=True,
+            download=False,
             transform=transform,
             target_transform=target_transform,
         )
@@ -54,7 +54,7 @@ class CIFAR100DataModule(TorchvisionDataModuleBase):
         return CIFAR100(
             self.data_dir,
             train=False,
-            download=True,
+            download=False,
             transform=transform,
             target_transform=target_transform,
         )

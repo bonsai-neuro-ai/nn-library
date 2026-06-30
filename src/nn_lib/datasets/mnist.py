@@ -14,7 +14,7 @@ class MNISTDataModule(TorchvisionDataModuleBase):
         return MNIST(
             self.data_dir,
             train=True,
-            download=True,
+            download=False,
             transform=transform,
             target_transform=target_transform,
         )
@@ -25,7 +25,7 @@ class MNISTDataModule(TorchvisionDataModuleBase):
         return MNIST(
             self.data_dir,
             train=False,
-            download=True,
+            download=False,
             transform=transform,
             target_transform=target_transform,
         )
