@@ -89,7 +89,11 @@ class TorchvisionDataModuleBase(metaclass=ABCMeta):
             metadata_file = os.path.join(self.data_dir, "metadata.pkl")
             if not os.path.exists(metadata_file):
                 # Calculate mean and std of each channel of the dataset.
-                d = self.train_data(transform=tv_transforms.ToTensor())
+                d = self.train_data(
+                    transform=tv_transforms.Compose(
+                        [tv_transforms.ToImage(), tv_transforms.ToDtype(torch.float32, scale=True)]
+                    )
+                )
                 im = next(iter(d))[0]
                 num_channels = im.shape[0]
                 moment1, moment2 = torch.zeros(num_channels), torch.zeros(num_channels)
