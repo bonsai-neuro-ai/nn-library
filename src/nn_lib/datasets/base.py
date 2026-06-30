@@ -12,6 +12,19 @@ import torchvision.transforms.v2 as tv_transforms
 
 
 class TorchvisionDataModuleBase(metaclass=ABCMeta):
+    """
+    Lightning-style DataModule base class wrapping a torchvision dataset, providing
+    train/val/test splits and dataloaders with sensible defaults (default normalization
+    transforms, reproducible shuffling/splitting via `seed`).
+
+    Subclasses must set the `name`, `_default_shape`, and `type` class attributes, and implement
+    `train_data`/`test_data` to construct the underlying torchvision `Dataset`.
+
+    Note: subclasses are expected to call torchvision dataset constructors with `download=False`.
+    This library does not download datasets automatically; data must already exist under
+    `root_dir/name` (see `data_dir`) before use.
+    """
+
     _default_shape: tuple[int, int, int] = None
     name: str = None
     type: TorchvisionDatasetType = None
@@ -22,6 +35,14 @@ class TorchvisionDataModuleBase(metaclass=ABCMeta):
         train_val_split: float = 11 / 12,
         seed: int = 8675309,
     ):
+        """
+        :param root_dir: directory containing dataset subfolders, one per dataset `name`. If
+            None, falls back to the `DATA_ROOT` environment variable, then to "./data".
+        :param train_val_split: fraction of the training data to use for the train split; the
+            remainder becomes the validation split (see `setup`).
+        :param seed: random seed used for the train/val split and for dataloader shuffling, to
+            keep splits reproducible across runs.
+        """
         super().__init__()
         self.train_val_split = train_val_split
         self.seed = seed
@@ -61,20 +82,24 @@ class TorchvisionDataModuleBase(metaclass=ABCMeta):
 
     @property
     def data_dir(self):
+        """Directory this dataset's files are expected to live in: `root_dir / name`."""
         return self.root_dir / self.name
 
     @abstractmethod
     def train_data(self, transform=None, target_transform=None, transforms=None):
-        """Download the dataset if needed; must be implemented by subclass and return train
-        dataset."""
+        """Construct and return the underlying torchvision train dataset. Must be implemented by
+        subclass. Data is expected to already exist on disk (not downloaded automatically)."""
 
     @abstractmethod
     def test_data(self, transform=None, target_transform=None, transforms=None):
-        """Download the dataset if needed; must be implemented by subclass and return train
-        dataset."""
+        """Construct and return the underlying torchvision test dataset. Must be implemented by
+        subclass. Data is expected to already exist on disk (not downloaded automatically)."""
 
     @property
     def requires_target_transform(self):
+        """True if this dataset's task type needs a joint input/target transform (`transforms=`)
+        instead of separate `transform`/`target_transform` (e.g. segmentation, detection, flow,
+        where the transform must be applied consistently to both image and target)."""
         return self.type in (
             TorchvisionDatasetType.SEMANTIC_SEGMENTATION,
             TorchvisionDatasetType.OBJECT_DETECTION,

@@ -22,6 +22,19 @@ __all__ = [
 
 
 class Regressable(abc.ABC):
+    """
+    Mixin for nn.Module subclasses whose weights can be initialized by linear regression on
+    (input, output) data pairs, optionally in a streaming/batched fashion for large datasets.
+
+    Concretely, call `init_by_regression(from_data, to_data)` once you have representative
+    activations and you want to set this layer's weights to best approximate that mapping.
+    For layers with non-linear constraints on weights (e.g. orthogonality), the regression
+    solution is projected back onto the constraint set via the parametrization's `right_inverse`.
+
+    Subclasses must implement `_prep_regressors` (to reshape data into 2D) and
+    `_set_regression_results` (to assign the solved weight/bias back to the module's parameters).
+    """
+
     def __init__(self, has_bias: bool):
         self.regression_handler = None
         self.has_bias = has_bias
@@ -79,11 +92,16 @@ class Regressable(abc.ABC):
 
 
 class RegressableLinear(nn.Linear, Regressable):
+    """Linear layer that can be initialized by least-squares regression via `init_by_regression`.
+    Drop-in replacement for `nn.Linear` whenever you want to fit its weights to data."""
+
     def __init__(self, *args, **kwargs):
         nn.Linear.__init__(self, *args, **kwargs)
         Regressable.__init__(self, has_bias=self.bias is not None)
 
     def set_weight(self, new_weight: torch.Tensor):
+        """Assign `new_weight` to this layer's weight parameter, respecting any active
+        parametrization (e.g. low-rank or orthogonality constraint)."""
         if isinstance(self.weight, nn.Parameter):
             # Case 1: weight is a nn.Parameter, so we can assign to it directly. But we're
             # careful not to do self.weight = nn.Parameter(lstsq.solution.T) because that would
@@ -100,6 +118,7 @@ class RegressableLinear(nn.Linear, Regressable):
             raise RuntimeError("Unexpected type for self.weight")
 
     def set_bias(self, new_bias: Optional[torch.Tensor]):
+        """Assign `new_bias` to this layer's bias parameter (no-op if either is None)."""
         if new_bias is not None and self.bias is not None:
             if isinstance(self.bias, nn.Parameter):
                 self.bias.data.copy_(new_bias)
@@ -122,6 +141,13 @@ class RegressableLinear(nn.Linear, Regressable):
 
 
 class LowRankLinear(RegressableLinear):
+    """Linear layer whose weight matrix is constrained to have a specific low rank (via SVD
+    parametrization). When initialized by regression, the solved weight is automatically projected
+    onto the nearest low-rank matrix.
+
+    :param rank: maximum rank of the weight matrix (number of singular values to retain).
+    """
+
     def __init__(
         self,
         in_features: int,
@@ -138,6 +164,14 @@ class LowRankLinear(RegressableLinear):
 
 
 class ProcrustesLinear(RegressableLinear):
+    """Linear layer whose weight is constrained to be orthonormal (optionally also allowing a
+    global scale factor), i.e. it solves the Procrustes problem. When initialized by regression,
+    the solved weight is projected onto the nearest (scaled) orthogonal matrix.
+
+    With `scale=True` (default), the weight is a scaled rotation/reflection matrix; with
+    `scale=False`, it is a pure rotation/reflection. `__repr__` summarizes the combined constraint.
+    """
+
     def __init__(
         self,
         in_features: int,
@@ -173,6 +207,14 @@ class ProcrustesLinear(RegressableLinear):
 
 
 def make_conv2d_from_linear(linear_cls: type[RegressableLinear]) -> type[Regressable]:
+    """Factory that wraps a `RegressableLinear` subclass to produce an equivalent Conv2d-style
+    layer. The convolution is implemented via `F.unfold` + a vmapped linear layer, so all weight
+    constraints (low-rank, orthogonality, etc.) from `linear_cls` carry over automatically.
+
+    Returns a new class (not yet instantiated) whose name mirrors `linear_cls` with "Linear"
+    replaced by "Conv2d" (e.g. `LowRankLinear` → `LowRankConv2d`).
+    """
+
     class InnerClass(nn.Module, Regressable):
         def __init__(
             self,
@@ -237,6 +279,8 @@ def make_conv2d_from_linear(linear_cls: type[RegressableLinear]) -> type[Regress
             self.linear._set_regression_results(weight, bias)
 
         def to_conv2d(self) -> nn.Conv2d:
+            """Convert this layer into a standard `nn.Conv2d` with the same learned weights.
+            Useful after training when you want to swap back to the efficient PyTorch kernel."""
             conv2d = nn.Conv2d(
                 self.in_channels,
                 self.out_channels,
@@ -257,6 +301,10 @@ ProcrustesConv2d = make_conv2d_from_linear(ProcrustesLinear)
 
 
 class Interpolate2d(nn.Module):
+    """Thin `nn.Module` wrapper around `F.interpolate`, so that bilinear/bicubic upsampling
+    (or any other interpolation mode) can be used as a named layer inside a `nn.Sequential` or
+    traced via `torch.fx`. All keyword arguments are forwarded to `F.interpolate` on each call."""
+
     def __init__(
         self,
         size: Any | None = None,

@@ -54,6 +54,21 @@ def safe_regression(
 
 
 class StreamingLinearRegression(object):
+    """
+    Accumulates sufficient statistics (means, X^T X, X^T Y) for linear regression across
+    multiple minibatches, then solves the normal equations once all data has been seen.
+
+    This lets you fit a linear regression on a dataset that is too large to hold in memory at
+    once. Typical usage::
+
+        slr = StreamingLinearRegression()
+        for x_batch, y_batch in dataloader:
+            slr.add_batch(x_batch.flatten(1), y_batch.flatten(1))
+        w, b = slr.solve(bias=True, ridge=1e-3)
+
+    See also `safe_regression` for an in-memory version that works on a single batch.
+    """
+
     def __init__(self):
         self._mean_x: RunningAverage[torch.Tensor] = RunningAverage()
         self._mean_y: RunningAverage[torch.Tensor] = RunningAverage()
@@ -86,6 +101,12 @@ class StreamingLinearRegression(object):
 
     @torch.no_grad()
     def add_batch(self, from_data: torch.Tensor, to_data: torch.Tensor) -> None:
+        """
+        Accumulate statistics for one batch of (input, output) pairs.
+
+        :param from_data: input data of shape (batch, n_features).
+        :param to_data: target data of shape (batch, n_targets).
+        """
         batch_size = from_data.size(0)
         self._mean_x.update(torch.mean(from_data, dim=0), batch_size)
         self._mean_y.update(torch.mean(to_data, dim=0), batch_size)
@@ -94,7 +115,14 @@ class StreamingLinearRegression(object):
 
     @torch.no_grad()
     def solve(self, bias: bool = True, ridge: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
-        """Calculate weights w and bias b from batch statistics added so far. If 'bias' is True,"""
+        """
+        Solve the linear regression using the accumulated statistics.
+
+        :param bias: if True, fit an intercept by centering the data (so the intercept is
+            estimated as mean_y - mean_x @ w).
+        :param ridge: L2 regularization strength added to the diagonal of X^T X before solving.
+        :return: (w, b) where w has shape (n_features, n_targets) and b has shape (n_targets,).
+        """
         if bias:
             ata = self.xtx - self.mean_x[:, None] @ self.mean_x[None, :]
             atb = self.xty - self.mean_x[:, None] @ self.mean_y[None, :]

@@ -55,6 +55,9 @@ class VanHateren(Dataset):
         self.crop_border = crop_border
 
     def __getitem__(self, index):
+        """Load and preprocess image at `index`. Returns a float32 numpy array of shape (512, 768)
+        (after 2× downsampling from the raw 1024×1536), with any configured local contrast
+        normalization and clipping applied."""
         with open(self.filenames[index], "rb") as fin:
             img = np.frombuffer(fin.read(), dtype="uint16").byteswap().reshape(1024, 1536)
             # original paper + dataset github say the 'effective' bit depth is 12, so we divide
@@ -84,6 +87,7 @@ class VanHateren(Dataset):
         return img
 
     def __len__(self):
+        """Number of images in the dataset."""
         return len(self.filenames)
 
 

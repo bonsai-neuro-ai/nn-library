@@ -3,6 +3,9 @@ from nn_lib.datasets.base import TorchvisionDataModuleBase, TorchvisionDatasetTy
 
 
 class MNISTDataModule(TorchvisionDataModuleBase):
+    """MNIST handwritten digit classification. Expects data already downloaded to `data_dir` (see
+    `TorchvisionDataModuleBase`); does not support a joint `transforms=` callable."""
+
     name = "mnist"
     _default_shape = (1, 28, 28)
     num_classes = 10

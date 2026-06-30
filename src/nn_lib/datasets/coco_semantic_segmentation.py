@@ -5,6 +5,19 @@ from torchvision.datasets import CocoDetection, wrap_dataset_for_transforms_v2
 
 
 class CocoDetectionDataModule(TorchvisionDataModuleBase):
+    """
+    DataModule for COCO instance detection/segmentation, loaded from the standard COCO layout::
+
+        data_dir/
+            images/train2017/  images/val2017/
+            annotations/instances_train2017.json  annotations/instances_val2017.json
+
+    Wraps `torchvision.datasets.CocoDetection` with `wrap_dataset_for_transforms_v2` so that
+    joint image+mask transforms work correctly. Provides a custom `collate_fn` that pads ragged
+    per-image annotation lists into batch tensors; pass it when constructing your own DataLoaders
+    (it is injected automatically into the dataloaders returned by this class).
+    """
+
     name = "coco"
     _default_shape = (3, 224, 224)
     num_classes = 21
@@ -32,6 +45,9 @@ class CocoDetectionDataModule(TorchvisionDataModuleBase):
 
     @staticmethod
     def collate_fn(batch):
+        """Collate a batch of (image, annotations) pairs, padding ragged per-image annotation
+        tensors (boxes, labels, masks) to a uniform length along dim=0 so they stack into
+        a single batch tensor."""
         im_list, annot_list = zip(*batch)
         annot = {}
         for k in annot_list[0].keys():

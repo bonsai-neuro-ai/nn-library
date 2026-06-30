@@ -6,6 +6,17 @@ from .ntk import _create_functional_model_as_fn_of_params
 
 
 class LinearizedModelWrapper(nn.Module):
+    """
+    Wraps a model with its first-order Taylor expansion in parameter space, producing a new
+    `nn.Module` whose "parameters" are the *deltas* from the original model's initialization.
+
+    Evaluating the linearized model at input `x` computes f(θ₀ + Δθ; x) ≈ f(θ₀; x) + J(x)·Δθ,
+    where J(x) is the Jacobian of f at θ₀ evaluated at x. This is done efficiently via a
+    forward-mode JVP (`torch.func.jvp`) over the parameter perturbation, vmapped across the
+    batch. Note that this is significantly slower than evaluating the original model.
+
+    Construct via `linearize_model(model)` rather than instantiating directly.
+    """
 
     @staticmethod
     def _escape_param_name(name: str) -> str:

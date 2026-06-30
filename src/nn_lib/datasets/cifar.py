@@ -3,6 +3,9 @@ from nn_lib.datasets.base import TorchvisionDataModuleBase, TorchvisionDatasetTy
 
 
 class CIFAR10DataModule(TorchvisionDataModuleBase):
+    """CIFAR-10 image classification. Expects data already downloaded to `data_dir` (see
+    `TorchvisionDataModuleBase`); does not support a joint `transforms=` callable."""
+
     name = "cifar10"
     _default_shape = (3, 32, 32)
     num_classes = 10
@@ -32,6 +35,9 @@ class CIFAR10DataModule(TorchvisionDataModuleBase):
 
 
 class CIFAR100DataModule(TorchvisionDataModuleBase):
+    """CIFAR-100 image classification. Expects data already downloaded to `data_dir` (see
+    `TorchvisionDataModuleBase`); does not support a joint `transforms=` callable."""
+
     name = "cifar100"
     _default_shape = (3, 32, 32)
     num_classes = 100

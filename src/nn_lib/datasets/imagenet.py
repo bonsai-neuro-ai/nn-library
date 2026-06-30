@@ -5,6 +5,15 @@ import yaml
 
 
 class ImageNetDataModule(TorchvisionDataModuleBase):
+    """
+    ImageNet-1k image classification, loaded via `torchvision.datasets.ImageFolder` from
+    `data_dir/train` and `data_dir/val` subdirectories (standard ImageFolder layout: one
+    subfolder per class). Does not support a joint `transforms=` callable.
+
+    If a `class_ids.yaml` file is present in `data_dir`, it is loaded and used by
+    `class_id_to_label` to map ImageFolder's alphabetical class indices to human-readable labels.
+    """
+
     name = "imagenet"
     _default_shape = (3, 224, 224)
     num_classes = 1000
@@ -37,6 +46,8 @@ class ImageNetDataModule(TorchvisionDataModuleBase):
         )
 
     def class_id_to_label(self, class_id):
+        """Map an `ImageFolder` class index to a human-readable label, using `class_ids.yaml` if
+        present; otherwise returns `class_id` unchanged."""
         if self.class_ids is None:
             return class_id
         return self.class_ids[class_id]

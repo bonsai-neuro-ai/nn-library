@@ -15,6 +15,14 @@ from .utils import assert_repeatable_iter_factory, BatchIteratorFactory
 def distance(
     trace_cov_xx: torch.Tensor, trace_cov_yy: torch.Tensor, nuc_norm_xy: torch.Tensor, scaled: bool
 ) -> torch.Tensor:
+    """Compute the shape distance given precomputed (co)variance summaries.
+
+    :param trace_cov_xx: trace of the covariance (or uncentered second moment) of X.
+    :param trace_cov_yy: trace of the covariance (or uncentered second moment) of Y.
+    :param nuc_norm_xy: nuclear norm of the cross-covariance between X and Y.
+    :param scaled: if True, return the Riemannian arc-length (arccos of cosine similarity);
+        if False, return the Euclidean Procrustes size-and-shape distance.
+    """
     if scaled:
         # Riemannian Shape Distance (arc length):
         cosine_similarity = nuc_norm_xy / torch.sqrt(trace_cov_xx * trace_cov_yy)
@@ -51,6 +59,18 @@ class ShapeDistance(StreamingComparator):
 
 
 class CrossValidatedShapeDistance(StreamingComparator):
+    """
+    Cross-validated variant of `ShapeDistance` that corrects for the upward bias in the nuclear
+    norm of the cross-covariance matrix caused by finite sample size (analogous to how
+    cross-validation corrects for overfitting). Requires two passes over the data so the
+    `batch_iterator_factory` must be repeatable (see `assert_repeatable_iter_factory`).
+
+    :param centered: if True, center representations before computing (co)variances.
+    :param scaled: if True, return Riemannian arc-length distance; if False, Euclidean Procrustes.
+    :param xval_method: algorithm for leave-one-batch-out nuclear norm estimation. Options are
+        "brute_force", "rank1", "orthogonalize", and "ab" (see `xval_nuc_norm_cross_cov`).
+    """
+
     def __init__(
         self,
         centered: bool,
