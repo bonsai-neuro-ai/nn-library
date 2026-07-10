@@ -7,6 +7,7 @@ from nn_lib.utils import (
     xval_nuc_norm_cross_cov,
     RunningAverage,
     calculate_moments_batchwise,
+    XValStats,
 )
 from .utils import assert_repeatable_iter_factory, BatchIteratorFactory
 
@@ -103,12 +104,9 @@ class CrossValidatedShapeDistance(StreamingComparator):
 
         # First-pass: calculate moments and get low-bias estimate of the 'xx' and 'yy' terms
         moments = calculate_moments_batchwise(batch_iterator_factory(), covariances=True)
-        m = moments["moment1_0"].count
-
-        # Degrees of freedom used to normalize the cross-covariance. When 'centered' is True, the
-        # empirical mean is used and all cov estimators divide the sum of squares by (m-1). When
-        # centered is False, we assume mu=zeros for x and y and covs are normalized by just m.
-        dof = 1 if self.centered else 0
+        m_total = moments["moment1_0"].count
+        mu_x = moments["moment1_0"].avg
+        mu_y = moments["moment1_1"].avg
 
         # Pick the correctly-normalized cross-cov: cov_0_1 (centered, 1/(m-1)) or moment2_0_1
         # (uncentered, 1/m).
@@ -116,22 +114,21 @@ class CrossValidatedShapeDistance(StreamingComparator):
 
         # Precompute SVD of the cross-cov; this 'global' SVD is passed into xval_nuc_norm_cross_cov
         # which computes 'downdated' (leave-one-out) SVDs.
-        svd = torch.linalg.svd(m01, full_matrices=False)
+        u, s, vh = torch.linalg.svd(m01, full_matrices=False)
 
         # Second-pass: call xval_nuc_norm_cross_cov per batch, passing in svd for 'global' stats
         xval_nuc_norm_xy = RunningAverage()
         for batch_x, batch_y in batch_iterator_factory():
-            if self.centered:
-                # TODO - cross-validate the means too
-                batch_x = batch_x - moments["moment1_0"].avg.unsqueeze(0)
-                batch_y = batch_y - moments["moment1_1"].avg.unsqueeze(0)
-
             # DOF note: the per-sample downdates inside xval_nuc_norm methods subtract x_i y_i /
             # m_total, so m_total must match the normalization baked into m01 (i.e. 1/(m - dof)). In
             # other words, using m_total=m instead of m_total=m-dof results in small errors (failing
             # tests) when centered=True
             batch_avg_nuc_norm = xval_nuc_norm_cross_cov(
-                batch_x, batch_y, svd_cross_cov=svd, m_total=m - dof, method=self.method
+                batch_x,
+                batch_y,
+                method=self.method,
+                center=self.centered,
+                stats=XValStats(u, s, vh, m_total, mu_x, mu_y),
             )
             xval_nuc_norm_xy.update(batch_avg_nuc_norm, batch_count=batch_x.shape[0])
 

@@ -1,9 +1,16 @@
 import unittest
 
+import numpy as np
 import torch
-from torch.testing import assert_close
+from torch.testing import assert_close as assert_close_torch
 
-from nn_lib.utils import rank_one_svd_update, xval_nuc_norm_cross_cov
+from nn_lib.utils import rank_one_svd_update, xval_nuc_norm_cross_cov, XValStats
+
+
+def assert_close(x, y, lenience=0.0):
+    atol = (10.0**lenience) * np.sqrt(torch.finfo(x.dtype).eps)
+    rtol = atol / 10
+    assert_close_torch(x, y, rtol=rtol, atol=atol)
 
 
 class TestLinalgUtils(unittest.TestCase):
@@ -80,7 +87,7 @@ class TestLinalgUtils(unittest.TestCase):
                     for b_x, b_y in zip(x.reshape(4, 5, 5), y.reshape(4, 5, 6)):
                         avg += (
                             xval_nuc_norm_cross_cov(
-                                b_x, b_y, method="rank1", svd_cross_cov=svd_xy, m_total=20
+                                b_x, b_y, method="rank1", stats=XValStats(*svd_xy, m_total=20)
                             )
                             / 4
                         )
@@ -113,7 +120,7 @@ class TestLinalgUtils(unittest.TestCase):
                     for b_x, b_y in zip(x.reshape(4, 5, 5), y.reshape(4, 5, 6)):
                         avg += (
                             xval_nuc_norm_cross_cov(
-                                b_x, b_y, method="ab", svd_cross_cov=svd_xy, m_total=20
+                                b_x, b_y, method="ab", stats=XValStats(*svd_xy, m_total=20)
                             )
                             / 4
                         )
@@ -129,7 +136,7 @@ class TestLinalgUtils(unittest.TestCase):
                     result_brute_force = xval_nuc_norm_cross_cov(x, y, method="brute_force")
                     result_orthogonalize = xval_nuc_norm_cross_cov(x, y, method="orthogonalize")
                     # NOTE: orthogonalization is not exact, so we use a looser tolerance for this test
-                    assert_close(result_brute_force, result_orthogonalize, rtol=3e-3, atol=3e-3)
+                    assert_close(result_brute_force, result_orthogonalize, lenience=1)
 
                     result_orthogonalize_flipped = xval_nuc_norm_cross_cov(
                         y, x, method="orthogonalize"
@@ -149,9 +156,12 @@ class TestLinalgUtils(unittest.TestCase):
                     for b_x, b_y in zip(x.reshape(4, 5, 5), y.reshape(4, 5, 6)):
                         avg += (
                             xval_nuc_norm_cross_cov(
-                                b_x, b_y, method="orthogonalize", svd_cross_cov=svd_xy, m_total=20
+                                b_x,
+                                b_y,
+                                method="orthogonalize",
+                                stats=XValStats(*svd_xy, m_total=20),
                             )
                             / 4
                         )
                     # NOTE: orthogonalization is not exact, so we use a looser tolerance for this test
-                    assert_close(result_brute_force, avg, rtol=3e-3, atol=3e-3)
+                    assert_close(result_brute_force, avg, lenience=1)
