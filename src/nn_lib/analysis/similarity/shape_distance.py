@@ -7,7 +7,6 @@ from nn_lib.utils import (
     xval_nuc_norm_cross_cov,
     RunningAverage,
     calculate_moments_batchwise,
-    moments_to_covs,
 )
 from .utils import assert_repeatable_iter_factory, BatchIteratorFactory
 
@@ -32,6 +31,23 @@ def distance(
         return torch.sqrt(torch.clip(trace_cov_xx + trace_cov_yy - 2 * nuc_norm_xy, 0.0, None))
 
 
+def select_moments(
+    moments: dict[str, RunningAverage], centered: bool
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if centered:
+        return (
+            moments["cov_0_0"].avg,
+            moments["cov_1_1"].avg,
+            moments["cov_0_1"].avg,
+        )
+    else:
+        return (
+            moments["moment2_0_0"].avg,
+            moments["moment2_1_1"].avg,
+            moments["moment2_0_1"].avg,
+        )
+
+
 class ShapeDistance(StreamingComparator):
     """Computes the (Procrustes) Shape Distance between neural representations X and Y.
 
@@ -48,12 +64,12 @@ class ShapeDistance(StreamingComparator):
         self.scaled = scaled
 
     def streaming_compare(self, batch_iterator_factory: BatchIteratorFactory) -> torch.Tensor:
-        moments = calculate_moments_batchwise(batch_iterator_factory())
-        covs = moments_to_covs(moments, self.centered)
+        moments = calculate_moments_batchwise(batch_iterator_factory(), covariances=True)
+        m00, m11, m01 = select_moments(moments, self.centered)
         return distance(
-            torch.trace(covs["cov_0_0"]),
-            torch.trace(covs["cov_1_1"]),
-            torch.linalg.norm(covs["cov_0_1"], ord="nuc"),
+            torch.trace(m00),
+            torch.trace(m11),
+            torch.linalg.norm(m01, ord="nuc"),
             scaled=self.scaled,
         )
 
@@ -86,29 +102,42 @@ class CrossValidatedShapeDistance(StreamingComparator):
         assert_repeatable_iter_factory(batch_iterator_factory)
 
         # First-pass: calculate moments and get low-bias estimate of the 'xx' and 'yy' terms
-        moments = calculate_moments_batchwise(batch_iterator_factory())
-        covs = moments_to_covs(moments, self.centered)
+        moments = calculate_moments_batchwise(batch_iterator_factory(), covariances=True)
         m = moments["moment1_0"].count
 
-        # Precompute SVD of xy; this 'global' SVD is then passed into the xval_nuc_norm_cross_cov
-        # function which will calculate 'updated' SVDs.
-        svd = torch.linalg.svd(covs["cov_0_1"], full_matrices=True)
+        # Degrees of freedom used to normalize the cross-covariance. When 'centered' is True, the
+        # empirical mean is used and all cov estimators divide the sum of squares by (m-1). When
+        # centered is False, we assume mu=zeros for x and y and covs are normalized by just m.
+        dof = 1 if self.centered else 0
+
+        # Pick the correctly-normalized cross-cov: cov_0_1 (centered, 1/(m-1)) or moment2_0_1
+        # (uncentered, 1/m).
+        m00, m11, m01 = select_moments(moments, self.centered)
+
+        # Precompute SVD of the cross-cov; this 'global' SVD is passed into xval_nuc_norm_cross_cov
+        # which computes 'downdated' (leave-one-out) SVDs.
+        svd = torch.linalg.svd(m01, full_matrices=False)
 
         # Second-pass: call xval_nuc_norm_cross_cov per batch, passing in svd for 'global' stats
         xval_nuc_norm_xy = RunningAverage()
         for batch_x, batch_y in batch_iterator_factory():
             if self.centered:
+                # TODO - cross-validate the means too
                 batch_x = batch_x - moments["moment1_0"].avg.unsqueeze(0)
                 batch_y = batch_y - moments["moment1_1"].avg.unsqueeze(0)
 
+            # DOF note: the per-sample downdates inside xval_nuc_norm methods subtract x_i y_i /
+            # m_total, so m_total must match the normalization baked into m01 (i.e. 1/(m - dof)). In
+            # other words, using m_total=m instead of m_total=m-dof results in small errors (failing
+            # tests) when centered=True
             batch_avg_nuc_norm = xval_nuc_norm_cross_cov(
-                batch_x, batch_y, svd_cross_cov=svd, m_total=m, method=self.method
+                batch_x, batch_y, svd_cross_cov=svd, m_total=m - dof, method=self.method
             )
             xval_nuc_norm_xy.update(batch_avg_nuc_norm, batch_count=batch_x.shape[0])
 
         return distance(
-            torch.trace(covs["cov_0_0"]),
-            torch.trace(covs["cov_1_1"]),
+            torch.trace(m00),
+            torch.trace(m11),
             xval_nuc_norm_xy.avg,
             scaled=self.scaled,
         )

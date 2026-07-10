@@ -20,7 +20,9 @@ def procrustes_alt(x, y, scaled, centered, cross_validated):
     elif ny < nx:
         y = torch.concat([y, torch.zeros(m, nx - ny)], dim=1)
 
+    dof = 0
     if centered:
+        dof = 1
         x = x - x.mean(dim=0, keepdim=True)
         y = y - y.mean(dim=0, keepdim=True)
 
@@ -28,21 +30,21 @@ def procrustes_alt(x, y, scaled, centered, cross_validated):
         x = x / torch.linalg.norm(x, ord="fro")
         y = y / torch.linalg.norm(y, ord="fro")
 
-    term_xx = torch.sum(x * x) / m
-    term_yy = torch.sum(y * y) / m
+    term_xx = torch.sum(x * x) / (m - dof)
+    term_yy = torch.sum(y * y) / (m - dof)
 
     if cross_validated:
+        # TODO - downdate the x.mean and y.mean terms as well
         term_xy = 0.0
         xy = x.T @ y
-        for i in range(len(x)):
-            test_x, test_y = x[i : i + 1], y[i : i + 1]
-            u, _, vT = torch.linalg.svd(xy - test_x.T @ test_y)
-            term_xy += torch.sum(torch.einsum("...i,ik,kj,...j->...", test_x, u, vT, test_y)) / m
+        for test_x, test_y in zip(x, y):
+            u, _, vT = torch.linalg.svd(xy - test_x[:, None] * test_y[None, :], full_matrices=False)
+            term_xy += torch.einsum("i,ik,kj,j->", test_x, u, vT, test_y) / m
     else:
         # Align x to y; the optimal rotation Q = u @ vT
         u, _, vT = torch.linalg.svd(x.T @ y)
         x = x @ u @ vT
-        term_xy = torch.sum(x * y) / m
+        term_xy = torch.sum(x * y) / (m - dof)
 
     if scaled:
         return torch.arccos(torch.clip(term_xy / torch.sqrt(term_xx * term_yy), -1.0, 1.0))
@@ -87,7 +89,13 @@ class TestCrossValidatedShapeDistance(unittest.TestCase):
         for ctr in [False, True]:
             for scale in [False, True]:
                 with self.subTest(msg=f"center={ctr}, scale={scale}"):
-                    shape_dist = CrossValidatedShapeDistance(centered=ctr, scaled=scale)
+                    # Note: we're using the slow 'brute_force' method here because the approximate
+                    # methods might fail the tests just due to numerical precision issues.
+                    # Separately, 'test_linalg.py' contains various assertions that the different
+                    # methods produce nearly-identical results
+                    shape_dist = CrossValidatedShapeDistance(
+                        centered=ctr, scaled=scale, xval_method="brute_force"
+                    )
                     value = shape_dist.compare(self.x, self.y)
                     self.assertEqual(value.shape, torch.Size([]))
                     assert_close(value, procrustes_alt(self.x, self.y, scale, ctr, True))
@@ -98,7 +106,13 @@ class TestCrossValidatedShapeDistance(unittest.TestCase):
         for ctr in [False, True]:
             for scale in [False, True]:
                 with self.subTest(msg=f"center={ctr}, scale={scale}"):
-                    shape_dist = CrossValidatedShapeDistance(centered=ctr, scaled=scale)
+                    # Note: we're using the slow 'brute_force' method here because the approximate
+                    # methods might fail the tests just due to numerical precision issues.
+                    # Separately, 'test_linalg.py' contains various assertions that the different
+                    # methods produce nearly-identical results
+                    shape_dist = CrossValidatedShapeDistance(
+                        centered=ctr, scaled=scale, xval_method="brute_force"
+                    )
                     value = shape_dist.streaming_compare(lambda: dl)
                     self.assertEqual(value.shape, torch.Size([]))
                     orig_value = shape_dist.compare(self.x, self.y)

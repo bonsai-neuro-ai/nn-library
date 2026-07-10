@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 
 BatchIteratorFactory = Callable[
     [],
-    Iterable[torch.Tensor] | Iterable[tuple[torch.Tensor, ...] | Iterable[list[torch.Tensor, ...]]],
+    Iterable[torch.Tensor] | Iterable[tuple[torch.Tensor] | Iterable[list[torch.Tensor]]],
 ]
 
 
