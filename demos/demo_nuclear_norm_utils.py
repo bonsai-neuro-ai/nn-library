@@ -13,8 +13,13 @@ from joblib import Memory
 from torch.nn import functional as F
 
 from nn_lib.analysis.similarity.utils import prep_conv_layers
-from nn_lib.utils import xval_nuc_norm_cross_cov, RunningAverage, eye_like
-from nn_lib.utils.stats import calculate_moments_batchwise
+from nn_lib.utils import (
+    RunningAverage,
+    eye_like,
+    RunningCovariance,
+    XValStats,
+    xval_nuc_norm_cross_cov,
+)
 
 
 class DataGenerator:
@@ -151,24 +156,29 @@ def run_nuc_norm_test(gen: DataGenerator | ConvDataGenerator, method, m, uid):
         )
         tstart = time.time()
         # first-pass: moment estimation
-        moments = calculate_moments_batchwise(iter_factory())
+        rc = RunningCovariance()
+        for batch_x, batch_y in iter_factory():
+            rc.update(batch_x, batch_y)
+
+        # maybe do a second pass
         if method == "plugin":
-            norm = torch.linalg.norm(moments["moment2_0_1"].avg, ord="nuc")
+            norm = torch.linalg.norm(rc.covariance, ord="nuc")
         else:
-            svd = torch.linalg.svd(moments["moment2_0_1"].avg, full_matrices=False)
-            norm = RunningAverage()
+            # Uncentered global stats (no means) computed once, then reused for every batch.
+            stats = XValStats.from_running_covariance(rc)
+            running = RunningAverage()
             for bx, by in iter_factory():
                 match method:
                     case "LOO[ab]":
-                        norm = xval_nuc_norm_cross_cov(
-                            bx, by, method="ab", svd_cross_cov=svd, m_total=m
-                        )
+                        batch_norm = xval_nuc_norm_cross_cov(bx, by, method="ab", stats=stats)
                     case "LOO[ortho]":
-                        norm = xval_nuc_norm_cross_cov(
-                            bx, by, method="orthogonalize", svd_cross_cov=svd, m_total=m
+                        batch_norm = xval_nuc_norm_cross_cov(
+                            bx, by, method="orthogonalize", stats=stats
                         )
                     case _:
                         assert_never(method)
+                running.update(batch_norm, batch_count=bx.shape[0])
+            norm = running.avg
         elapsed = time.time() - tstart
 
     return {
@@ -212,7 +222,7 @@ plt.show()
 
 # %%
 
-CONVOLUTIONAL = True
+CONVOLUTIONAL = False
 
 # Generate data with some shared low-rank correlation
 norms = defaultdict(list)
