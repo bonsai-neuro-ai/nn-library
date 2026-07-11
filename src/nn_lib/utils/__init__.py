@@ -7,3 +7,4 @@ from .linalg import *
 from .mlflow import *
 from .models import *
 from .stats import *
+from .xval_nuc_norm import *
