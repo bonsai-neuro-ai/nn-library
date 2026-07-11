@@ -55,6 +55,7 @@ src/
             cli.py      # make it easier to define CLI for running jobs
             generic.py  # pythonic utilities
             linalg.py   # linear algebra utilities
+            xval_nuc_norm.py   # a mini research project on fast and accurate calculation of nuclear norms of cross-covariance matrices
             mlflow.py   # wrappers for common logging/saving/loading/searching tasks with MLFlow
             models.py   # utilities for working with PyTorch models
             profile.py  # largely deprecated utils for profiling training and inference speed
