@@ -6,78 +6,182 @@ from torch.testing import assert_close
 
 from nn_lib.utils.stats import (
     RunningAverage,
-    moments_to_covs,
-    calculate_moments_batchwise,
     RunningCovariance,
 )
 
 
+def mean_helper(x, centered):
+    if centered:
+        return x.mean(dim=0)
+    else:
+        return torch.zeros_like(x.mean(dim=0))
+
+
+def scalar_variance_helper(x, centered):
+    if centered:
+        return torch.var(x, dim=0)
+    else:
+        return torch.mean(x * x, dim=0)
+
+
+def covariance_helper(x, y, centered):
+    xy = torch.concat((x, y), dim=1)
+    if centered:
+        return torch.cov(xy.T)[: x.shape[1], x.shape[1] :]
+    else:
+        return x.T @ y / len(x)
+
+
 class TestStats(unittest.TestCase):
     def test_running_average_1(self):
-        values = torch.rand(10)
-        ra = RunningAverage()
-        for v in values:
-            ra.update(v, batch_count=1)
-        assert_close(ra.avg, torch.mean(values))
+        for device in ["cpu", "cuda"]:
+            with self.subTest(f"device={device}"):
+                values = torch.rand(10, device=device)
+                ra = RunningAverage()
+                for v in values:
+                    ra.update(v, batch_count=1)
+                assert_close(ra.avg, torch.mean(values))
 
     def test_running_average_batched(self):
-        values = torch.rand(10)
-        ra = RunningAverage()
-        for v in batched(values, 2):
-            ra.update(sum(v) / len(v), batch_count=2)
-        assert_close(ra.avg, torch.mean(values))
+        for device in ["cpu", "cuda"]:
+            with self.subTest(f"device={device}"):
+                values = torch.rand(10, device=device)
+                ra = RunningAverage()
+                for v in batched(values, 2):
+                    ra.update(sum(v) / len(v), batch_count=2)
+                assert_close(ra.avg, torch.mean(values))
 
-    def test_moments(self):
-        x = torch.rand((100, 2))
-        y = torch.rand((100, 3))
-        moments = calculate_moments_batchwise([(x, y)])
-        self.assertEqual(len(moments), 5)
-        assert_close(moments["moment1_0"].avg, torch.mean(x, dim=0))
-        assert_close(moments["moment2_0_0"].avg, torch.einsum("ni,nj->ij", x, x) / 100)
-        assert_close(moments["moment1_1"].avg, torch.mean(y, dim=0))
-        assert_close(moments["moment2_1_1"].avg, torch.einsum("ni,nj->ij", y, y) / 100)
-        assert_close(moments["moment2_0_1"].avg, torch.einsum("ni,nj->ij", x, y) / 100)
+    def test_covariance_x(self):
+        for device in ["cpu", "cuda"]:
+            for centered in [False, True]:
+                with self.subTest(f"device={device}, centered={centered}"):
+                    x = torch.rand((100, 2), device=device)
+                    rc = RunningCovariance(centered=centered, scalar=False)
+                    rc.update(x)
 
-        # Now do it batchy
-        moments = calculate_moments_batchwise([(x[:50], y[:50]), (x[50:], y[50:])])
-        self.assertEqual(len(moments), 5)
-        assert_close(moments["moment1_0"].avg, torch.mean(x, dim=0))
-        assert_close(moments["moment2_0_0"].avg, torch.einsum("ni,nj->ij", x, x) / 100)
-        assert_close(moments["moment1_1"].avg, torch.mean(y, dim=0))
-        assert_close(moments["moment2_1_1"].avg, torch.einsum("ni,nj->ij", y, y) / 100)
-        assert_close(moments["moment2_0_1"].avg, torch.einsum("ni,nj->ij", x, y) / 100)
+                    assert_close(rc.mu_x, mean_helper(x, centered=centered))
+                    assert_close(rc.mu_y, mean_helper(x, centered=centered))
+                    assert_close(rc.covariance, covariance_helper(x, x, centered=centered))
+
+                    # Now do it batchy
+                    rc = RunningCovariance(centered=centered, scalar=False)
+                    for batch in x.reshape(5, 20, 2):
+                        rc.update(batch)
+
+                    assert_close(rc.mu_x, mean_helper(x, centered=centered))
+                    assert_close(rc.mu_y, mean_helper(x, centered=centered))
+                    assert_close(rc.covariance, covariance_helper(x, x, centered=centered))
+
+    def test_scalar_variance_x(self):
+        for device in ["cpu", "cuda"]:
+            for centered in [False, True]:
+                with self.subTest(f"device={device}, centered={centered}"):
+                    x = torch.rand((100, 2), device=device)
+                    rc = RunningCovariance(centered=centered, scalar=True)
+                    rc.update(x)
+
+                    assert_close(rc.mu_x, mean_helper(x, centered=centered))
+                    assert_close(rc.variance, scalar_variance_helper(x, centered=centered))
+                    with self.assertRaises(ValueError):
+                        _ = rc.mu_y
+
+                    # Now do it batchy
+                    rc = RunningCovariance(centered=centered, scalar=True)
+                    for batch in x.reshape(5, 20, 2):
+                        rc.update(batch)
+
+                    assert_close(rc.mu_x, mean_helper(x, centered=centered))
+                    assert_close(rc.variance, scalar_variance_helper(x, centered=centered))
+                    with self.assertRaises(ValueError):
+                        _ = rc.mu_y
+
+    def test_covariance_xx(self):
+        for device in ["cpu", "cuda"]:
+            for centered in [False, True]:
+                with self.subTest(f"device={device}, centered={centered}"):
+                    x = torch.rand((100, 2), device=device)
+                    rc = RunningCovariance(centered=centered, scalar=False)
+                    rc.update(x, x)
+
+                    assert_close(rc.mu_x, mean_helper(x, centered=centered))
+                    assert_close(rc.mu_y, mean_helper(x, centered=centered))
+                    assert_close(rc.covariance, covariance_helper(x, x, centered=centered))
+
+                    # Now do it batchy
+                    rc = RunningCovariance(centered=centered, scalar=False)
+                    for batch in x.reshape(5, 20, 2):
+                        rc.update(batch, batch)
+
+                    assert_close(rc.mu_x, mean_helper(x, centered=centered))
+                    assert_close(rc.mu_y, mean_helper(x, centered=centered))
+                    assert_close(rc.covariance, covariance_helper(x, x, centered=centered))
+
+    def test_covariance_xy(self):
+        for device in ["cpu", "cuda"]:
+            for centered in [False, True]:
+                with self.subTest(f"device={device}, centered={centered}"):
+                    x = torch.rand((100, 2), device=device)
+                    y = torch.rand((100, 2), device=device)
+                    rc = RunningCovariance(centered=centered, scalar=False)
+                    rc.update(x, y)
+
+                    assert_close(rc.mu_x, mean_helper(x, centered=centered))
+                    assert_close(rc.mu_y, mean_helper(y, centered=centered))
+                    assert_close(rc.covariance, covariance_helper(x, y, centered=centered))
+
+                    # Now do it batchy
+                    rc = RunningCovariance(centered=centered, scalar=False)
+                    for batch_x, batch_y in zip(x.reshape(5, 20, 2), y.reshape(5, 20, 2)):
+                        rc.update(batch_x, batch_y)
+
+                    assert_close(rc.mu_x, mean_helper(x, centered=centered))
+                    assert_close(rc.mu_y, mean_helper(y, centered=centered))
+                    assert_close(rc.covariance, covariance_helper(x, y, centered=centered))
 
     def test_cov_methods_numerical_stability(self):
         x1 = torch.rand((1000, 2))
         y1 = torch.rand((1000, 3))
-        moments1 = calculate_moments_batchwise([(x1, y1)], covariances=True)
-        naive_covs1 = moments_to_covs(moments1, centered=True)
-        stable_covs1 = {k: v for k, v in moments1.items() if k.startswith("cov")}
 
-        # x2 and y2 are shifted copies of x1 and y1. This makes E[x^2]-E[x]^2 numerically unstable.
+        def _naive_cov(x_, y_):
+            # Naive cov estimator is E[xy]-E[x]E[y]
+            E_xy = x_.T @ y_ / 1000
+            E_x = torch.mean(x_, dim=0)
+            E_y = torch.mean(y_, dim=0)
+            return E_xy - E_x[:, None] * E_y[None, :]
+
+        # Get both the naive and stable cov estimators for x1 y1
+        naive_cov_xy1 = _naive_cov(x1, y1)
+        centered_moments = RunningCovariance(centered=True, scalar=False)
+        centered_moments.update(x1, y1)
+        stable_cov_xy = centered_moments.covariance
+
+        # Assert that the naive and stable estimators agree (which is expected as long as E[x] and
+        # E[y] are small)
+        assert_close(naive_cov_xy1, stable_cov_xy)
+
+        # x2 and y2 are shifted copies of x1 and y1. This is expected to make E[x^2]-E[x]^2
+        # numerically unstable.
         x2 = x1 + 1e3
         y2 = y1 + 1e3
-        moments2 = calculate_moments_batchwise([(x2, y2)], covariances=True)
-        naive_covs2 = moments_to_covs(moments2, centered=True)
-        stable_covs2 = {k: v for k, v in moments2.items() if k.startswith("cov")}
+        # Get both the naive and stable cov estimators for x1 y1
+        naive_cov_xy2 = _naive_cov(x2, y2)
+        centered_moments = RunningCovariance(centered=True, scalar=False)
+        centered_moments.update(x2, y2)
+        stable_cov_xy2 = centered_moments.covariance
 
-        # Theoretically cov(x1,y1) == cov(x2,y2) since cov should be invariant to offsets when
-        # centered. But the 'moments_to_covs' method is numerically imprecise (catastrophic
-        # canceling) so we assert here that they *aren't* the same as a way of asserting that
-        # numerical instability is at play. Hence the deprecation of 'moments_to_covs'.
-        for cov1, cov2 in zip(naive_covs1.values(), naive_covs2.values()):
-            with self.assertRaises(AssertionError):
-                assert_close(cov1, cov2)
+        # Assert that the naive and stable estimators no longer agree (this is the numerical
+        # instability)
+        with self.assertRaises(AssertionError):
+            assert_close(naive_cov_xy2, stable_cov_xy2)
 
-        # ...but, the Welford algorithm should have produced stable results.
-        for cov1, cov2 in zip(stable_covs1.values(), stable_covs2.values()):
-            assert_close(cov1.avg, cov2.avg)
+        # Assert that the stable estimates agree with each other
+        assert_close(stable_cov_xy, stable_cov_xy2)
 
-    def test_running_variance(self):
+    def test_running_scalar_variance(self):
         # 10 batches of 100 values each, with dimension 3
         values = torch.rand(10, 100, 3)
-        rc0 = RunningCovariance(dof=0, scalar=True)
-        rc1 = RunningCovariance(dof=1, scalar=True)
+        rc0 = RunningCovariance(centered=False, scalar=True)
+        rc1 = RunningCovariance(centered=True, scalar=True)
         for v in values:
             rc1.update(v)
             rc0.update(v)
@@ -95,7 +199,7 @@ class TestStats(unittest.TestCase):
         # Now compare results to biased (dof=0) and unbiased (dof=1) estimators.
         est_var_0 = rc0.avg
         est_var_1 = rc1.avg
-        true_var_0 = torch.var(values.view(-1, 3), dim=0, unbiased=False)
+        true_var_0 = torch.mean(values.view(-1, 3).pow(2), dim=0)
         true_var_1 = torch.var(values.view(-1, 3), dim=0, unbiased=True)
         assert_close(actual=est_var_1, expected=true_var_1)
         assert_close(actual=est_var_0, expected=true_var_0)
@@ -109,8 +213,8 @@ class TestStats(unittest.TestCase):
     def test_running_covariance(self):
         # 10 batches of 100 values each, with dimension 3
         values = torch.rand(10, 100, 3)
-        rc0 = RunningCovariance(dof=0, scalar=False)
-        rc1 = RunningCovariance(dof=1, scalar=False)
+        rc0 = RunningCovariance(centered=False, scalar=False)
+        rc1 = RunningCovariance(centered=True, scalar=False)
         for v in values:
             rc1.update(v)
             rc0.update(v)
@@ -128,7 +232,7 @@ class TestStats(unittest.TestCase):
         # Now compare results to biased (dof=0) and unbiased (dof=1) estimators.
         est_cov_0 = rc0.avg
         est_cov_1 = rc1.avg
-        true_cov_0 = torch.cov(values.view(-1, 3).T, correction=0)
+        true_cov_0 = torch.mean(values.view(-1, 1, 3) * values.view(-1, 3, 1), dim=0)
         true_cov_1 = torch.cov(values.view(-1, 3).T, correction=1)
         assert_close(actual=est_cov_1, expected=true_cov_1)
         assert_close(actual=est_cov_0, expected=true_cov_0)
@@ -157,12 +261,11 @@ class TestStats(unittest.TestCase):
 
         assert_close(rc_x.avg, rc_xx.avg)
 
-
     def test_running_cross_covariance(self):
         values_x = torch.rand(5, 100, 3)
         values_y = torch.rand(5, 100, 4)
-        rc0 = RunningCovariance(dof=0, scalar=False)
-        rc1 = RunningCovariance(dof=1, scalar=False)
+        rc0 = RunningCovariance(centered=False, scalar=False)
+        rc1 = RunningCovariance(centered=True, scalar=False)
         for v_x, v_y in zip(values_x, values_y):
             rc1.update(v_x, v_y)
             rc0.update(v_x, v_y)
@@ -176,7 +279,7 @@ class TestStats(unittest.TestCase):
         est_cov_0 = rc0.avg
         est_cov_1 = rc1.avg
         values_xy = torch.concat([values_x, values_y], dim=-1)
-        true_cov_0 = torch.cov(values_xy.view(-1, 7).T, correction=0)[:3, 3:]
+        true_cov_0 = torch.mean(values_x.view(-1, 3, 1) * values_y.view(-1, 1, 4), dim=0)
         true_cov_1 = torch.cov(values_xy.view(-1, 7).T, correction=1)[:3, 3:]
         assert_close(actual=est_cov_1, expected=true_cov_1)
         assert_close(actual=est_cov_0, expected=true_cov_0)
