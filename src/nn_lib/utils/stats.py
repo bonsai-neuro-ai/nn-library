@@ -29,41 +29,104 @@ class RunningAverage[T]:
         self.count += batch_count
 
 
-class RunningCovariance:
+class RunningVariance(object):
     """
-    Welford algorithm to track running variance or covariance or cross-covariance (more
-    numerically stable than RunningAverage(x*y) - RunningAverage(x)*RunningAverage(y)). Note that
-    where RunningAverage accepts a precomputed average of each batch of values, this class
-    expects the raw values.
+    Welford algorithm to track running variance (more numerically stable than RunningAverage(x*y)
+    - RunningAverage(x)*RunningAverage(y)). Note that where RunningAverage accepts a precomputed
+    average of each batch of values, this class expects the raw values.
 
     Whereas we could write RunningAverage in a type-agnostic way, this class assumes torch Tensors.
     It is otherwise too awkward to handle initialization, copies, updates, etc. with generic types.
 
     This algorithm assumes by default the mean is unknown ahead of time and hence the dof=1
-    correction is the default, i.e. querying the resulting variances or covariances gives the
-    unbiased estimators of each.
+    correction is the default, i.e. querying the resulting variances gives the unbiased estimate
 
-    For variance of sets of scalars, call update(x). For a covariance matrix, call update(x, x). For
-    a cross-covariance matrix, call update(x, y).
-
-    Note that 'RunningCovariance' has an .avg property and a .count property, so it duck-types just
+    Note that 'RunningVariance' has an .avg property and a .count property, so it duck-types just
     like a RunningAverage instance.
 
     :param centered: Whether to track empirical means. If False, assumes mu_x=mu_y=zeros and dof=0.
         Default is True, so the resulting variances and covariances match the defaults for np.var
         or torch.var.
-    :param scalar: whether we are tracking the per-element variances or the element-by-element
-        covariances. Default False (covariances).
     """
 
-    def __init__(self, centered: bool = True, scalar: bool = False):
+    def __init__(self, centered: bool = True):
+        self.count: int = 0
+        self._mu_x: torch.Tensor | None = None
+        self.centered = centered
+        self._sum_of_squares: torch.Tensor | None = None
+        self._dof = 1 if centered else 0
+
+    @staticmethod
+    def _get_or_init_mean(
+        count: int, centered: bool, mu: torch.Tensor | None, val: torch.Tensor
+    ) -> torch.Tensor:
+        """Instantiate or calculate new means. Does not write to self._mu."""
+        if count <= 1:
+            if centered:
+                return torch.clone(val)
+            else:
+                # Allocate new zeros at initialization matching the specs of val. The 'uncentered'
+                # case is equivalent to setting means equal to zero.
+                return torch.zeros_like(val)
+        else:
+            if centered:
+                new_mu = mu + (val - mu) / count
+                return new_mu
+            else:
+                # Whenever count > 0, we can assume mu was initialized to zeros. Just re-return the
+                # same zeros rather than allocating new zeros.
+                return mu
+
+    def update(self, values_x: Iterable[torch.Tensor]):
+        """
+        Fold in a new batch of values. Unlike RunningAverage, this should be a raw set of values.
+        In other words, the caller should not precompute any batch means or batch variances.
+
+        :param values_x: an iterable batch of tensor values.
+        """
+        for x in values_x:
+            self.count += 1
+            new_mu_x = self._get_or_init_mean(self.count, self.centered, self._mu_x, x)
+            if self.count == 1:
+                self._sum_of_squares = torch.zeros_like(x) if self.centered else x**2
+            else:
+                # Running updates (see Welford's incremental algorithm in
+                # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance).
+                self._sum_of_squares += (x - new_mu_x) * (x - self._mu_x)
+            self._mu_x = new_mu_x
+
+    @property
+    def mu_x(self) -> torch.Tensor:
+        if self._mu_x is None:
+            raise ValueError("No data yet; call update() with some values first")
+        return self._mu_x
+
+    @property
+    def variance(self) -> torch.Tensor:
+        if self._sum_of_squares is None or self.count < self._dof:
+            raise ValueError("No data yet; call update() with some values first")
+        return self._sum_of_squares / (self.count - self._dof)
+
+    @property
+    def avg(self):
+        return self.variance
+
+
+class RunningCovariance:
+    """Like RunningVariance but tracks covariance matrices instead of scalar variances.
+
+    :param centered: Whether to track empirical means. If False, assumes mu_x=mu_y=zeros and dof=0.
+        Default is True, so the resulting variances and covariances match the defaults for np.var
+        or torch.var.
+    """
+
+    def __init__(self, centered: bool = True):
         self.count: int = 0
         self._mu_x: torch.Tensor | None = None
         self._mu_y: torch.Tensor | None = None
         self.centered = centered
         self._sum_of_squares: torch.Tensor | None = None
         self._dof = 1 if centered else 0
-        self._scalar = scalar
 
     @staticmethod
     def _get_or_init_mean(
@@ -86,26 +149,26 @@ class RunningCovariance:
                 # same zeros rather than allocating new zeros.
                 return mu
 
-    def _update_scalar_variances(self, values_x: Iterable[torch.Tensor]):
-        for x in values_x:
-            self.count += 1
-            new_mu_x = RunningCovariance._get_or_init_mean(self.count, self.centered, self._mu_x, x)
-            if self.count == 1:
-                self._sum_of_squares = torch.zeros_like(x) if self.centered else x**2
-            else:
-                # Running updates (see Welford's incremental algorithm in
-                # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance).
-                self._sum_of_squares += (x - new_mu_x) * (x - self._mu_x)
-            self._mu_x = new_mu_x
-
-    def _update_vector_covariances(
-        self, values_x: Iterable[torch.Tensor], values_y: Iterable[torch.Tensor]
+    def update(
+        self, values_x: Iterable[torch.Tensor], values_y: Optional[Iterable[torch.Tensor]] = None
     ):
+        """
+        Fold in a new batch of values. Unlike RunningAverage, this should be a raw set of values.
+        In other words, the caller should not precompute any batch means or batch variances.
+
+        :param values_x: an iterable of tensor values. If values_x has shape (batch, a, b,
+        c) then  it is flattened, and we keep track of a (a*b*c, a*b*c) shaped covariance matrix.
+        :param values_y: If provided, values_y defines the columns of the cross-covariance matrix
+        where values_x defines the rows.
+        """
+        if values_y is None:
+            values_y = values_x
+
         for x, y in zip(values_x, values_y):
             self.count += 1
             x, y = x.flatten(), y.flatten()
-            new_mu_x = RunningCovariance._get_or_init_mean(self.count, self.centered, self._mu_x, x)
-            new_mu_y = RunningCovariance._get_or_init_mean(self.count, self.centered, self._mu_y, y)
+            new_mu_x = self._get_or_init_mean(self.count, self.centered, self._mu_x, x)
+            new_mu_y = self._get_or_init_mean(self.count, self.centered, self._mu_y, y)
             if self.count == 1:
                 self._sum_of_squares = (
                     torch.zeros((len(x), len(y)), dtype=x.dtype, device=x.device)
@@ -120,29 +183,6 @@ class RunningCovariance:
             self._mu_x = new_mu_x
             self._mu_y = new_mu_y
 
-    def update(
-        self, values_x: Iterable[torch.Tensor], values_y: Optional[Iterable[torch.Tensor]] = None
-    ):
-        """
-        Fold in a new batch of values. Unlike RunningAverage, this should be a raw set of values.
-        In other words, the caller should not precompute any batch means or batch variances.
-
-        :param values_x: an iterable of tensor values. If scalar=True and values_x has shape (
-        batch, a, b, c) then we keep track of an (a, b, c) shaped tensor of variances of each
-        element. If scalar=False and values_x is the only input, it is flattened, and we keep track
-        of a (a*b*c, a*b*c) shaped covariance matrix.
-        :param values_y: only valid if scalar=False. If provided, values_y defines the columns of
-        the cross-covariance matrix where values_x defines the rows.
-        """
-        if self._scalar:
-            if values_y is not None:
-                raise ValueError("Do not pass in values_y if calculating scalar variances")
-            self._update_scalar_variances(values_x)
-        else:
-            if values_y is None:
-                values_y = values_x
-            self._update_vector_covariances(values_x, values_y)
-
     @property
     def mu_x(self) -> torch.Tensor:
         if self._mu_x is None:
@@ -156,30 +196,18 @@ class RunningCovariance:
         return self._mu_y
 
     @property
-    def variance(self) -> torch.Tensor:
-        if not self._scalar:
-            raise ValueError("Call 'covariance' for the non-scalar case")
-        if self._sum_of_squares is None or self.count < self._dof:
-            raise ValueError("No data yet; call update() with some values first")
-        return self._sum_of_squares / (self.count - self._dof)
-
-    @property
     def covariance(self) -> torch.Tensor:
-        if self._scalar:
-            raise ValueError("Call 'variance' for the scalar case")
         if self._sum_of_squares is None or self.count < self._dof:
             raise ValueError("No data yet; call update() with some values first")
         return self._sum_of_squares / (self.count - self._dof)
 
     @property
     def avg(self):
-        if self._scalar:
-            return self.variance
-        else:
-            return self.covariance
+        return self.covariance
 
 
 __all__ = [
     "RunningAverage",
+    "RunningVariance",
     "RunningCovariance",
 ]

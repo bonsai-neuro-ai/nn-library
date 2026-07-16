@@ -52,7 +52,7 @@ class XValStats(NamedTuple):
 def _xval_stats_from_full_data(matX: torch.Tensor, matY: torch.Tensor, centered: bool) -> XValStats:
     """Build `XValStats` treating matX/matY as the entire dataset (the convenience path used when
     no precomputed `stats` are supplied)."""
-    rc = RunningCovariance(centered=centered, scalar=False)
+    rc = RunningCovariance(centered=centered)
     rc.update(matX, matY)
     return XValStats.from_running_covariance(rc)
 

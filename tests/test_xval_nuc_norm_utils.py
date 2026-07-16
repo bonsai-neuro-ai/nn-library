@@ -291,7 +291,7 @@ class TestLinalgUtils(unittest.TestCase):
                     result_brute_force = xval_nuc_norm_cross_cov(
                         x, y, centered=True, method="brute_force"
                     )
-                    rc = RunningCovariance(centered=True, scalar=False)
+                    rc = RunningCovariance(centered=True)
                     rc.update(x, y)
                     stats = XValStats.from_running_covariance(rc)
                     avg = 0
@@ -325,7 +325,7 @@ class TestLinalgUtils(unittest.TestCase):
                     result_brute_force = xval_nuc_norm_cross_cov(
                         x, y, centered=True, method="brute_force"
                     )
-                    rc = RunningCovariance(centered=True, scalar=False)
+                    rc = RunningCovariance(centered=True)
                     rc.update(x, y)
                     stats = XValStats.from_running_covariance(rc)
                     avg = 0
@@ -370,7 +370,7 @@ class TestLinalgUtils(unittest.TestCase):
                     result_brute_force = xval_nuc_norm_cross_cov(
                         x, y, centered=True, method="brute_force"
                     )
-                    rc = RunningCovariance(centered=True, scalar=False)
+                    rc = RunningCovariance(centered=True)
                     rc.update(x, y)
                     stats = XValStats.from_running_covariance(rc)
                     avg = 0
@@ -417,7 +417,7 @@ class TestLinalgUtils(unittest.TestCase):
                     result_brute_force = xval_nuc_norm_cross_cov(
                         x, y, centered=True, method="brute_force"
                     )
-                    rc = RunningCovariance(centered=True, scalar=False)
+                    rc = RunningCovariance(centered=True)
                     rc.update(x, y)
                     stats = XValStats.from_running_covariance(rc)
                     avg = 0

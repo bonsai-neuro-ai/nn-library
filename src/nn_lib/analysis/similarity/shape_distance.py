@@ -3,7 +3,13 @@ from typing import Literal
 import torch
 
 from nn_lib.analysis.similarity.comparator import StreamingComparator
-from nn_lib.utils import RunningCovariance, RunningAverage, XValStats, xval_nuc_norm_cross_cov
+from nn_lib.utils import (
+    RunningCovariance,
+    RunningAverage,
+    XValStats,
+    xval_nuc_norm_cross_cov,
+    RunningVariance,
+)
 from .utils import assert_repeatable_iter_factory, BatchIteratorFactory
 
 
@@ -29,10 +35,10 @@ def distance(
 
 def _first_pass_moments(
     batch_iterator_factory: BatchIteratorFactory, centered: bool
-) -> tuple[RunningCovariance, RunningCovariance, RunningCovariance]:
-    stats_x = RunningCovariance(centered=centered, scalar=True)
-    stats_y = RunningCovariance(centered=centered, scalar=True)
-    stats_xy = RunningCovariance(centered=centered, scalar=False)
+) -> tuple[RunningVariance, RunningVariance, RunningCovariance]:
+    stats_x = RunningVariance(centered=centered)
+    stats_y = RunningVariance(centered=centered)
+    stats_xy = RunningCovariance(centered=centered)
 
     for batch_x, batch_y in batch_iterator_factory():
         stats_x.update(batch_x)
