@@ -1,3 +1,4 @@
+import os
 import tempfile
 import traceback
 from contextlib import contextmanager
@@ -23,15 +24,45 @@ class RunDoesNotExist(Exception):
     pass
 
 
+def _path_to_mlflow_path(path: Path) -> str | None:
+    str_path = str(path)
+    if str_path.startswith("."):
+        str_path = str_path.lstrip("." + os.sep)
+    if str_path == "":
+        str_path = None
+    return str_path
+
+
 @contextmanager
 def open_mlflow_artifact_file(
     path: Union[str, Path], mode: str = "w", run_id: Optional[str] = None
 ):
+    path = Path(path)
+    path, name = path.parent, path.name
+
+    if run_id is None:
+        run_id = mlflow.active_run().info.run_id
+
+    artifact_exists = False
+    for file in mlflow.artifacts.list_artifacts(run_id=run_id, artifact_path=str(path)):
+        if Path(file.path).name == name:
+            artifact_exists = True
+            break
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        local_file = Path(tmpdir) / path
+        if artifact_exists:
+            local_file = mlflow.artifacts.download_artifacts(
+                run_id=run_id, artifact_path=str(path / name), dst_path=tmpdir
+            )
+        else:
+            local_file = Path(tmpdir) / name
+
         with open(local_file, mode) as f:
             yield f
-        mlflow.log_artifact(str(local_file), artifact_path=str(path), run_id=run_id)
+
+        mlflow.log_artifact(
+            str(local_file), artifact_path=_path_to_mlflow_path(path), run_id=run_id
+        )
 
 
 def log_params_and_config(params: Namespace, parser: ArgumentParser):
@@ -286,8 +317,7 @@ def auto_cli_mlflow_job(
 
     fn_args_instantiated = parser.instantiate(args)
     try:
-        with fancy_start_run(args, deduplicate, ignore_keys_dedup):
-            log_params_and_config(args, parser)
+        with fancy_start_run(args, parser, deduplicate, ignore_keys_dedup):
             run_fn(**fn_args_instantiated.as_dict())
     except RunExists:
         if dry_run:
@@ -298,14 +328,31 @@ def auto_cli_mlflow_job(
 
 
 class fancy_start_run(object):
+    """`with fancy_start_run(...) as run` is a replacement for `with mlflow.start_run() as run`.
+
+    Fancy things:
+    - automatically calls mlflow.log_params
+    - automatically saves a `config.yaml` file with parameters
+    - deduplication so if a run already exists with these parameters we just exit immediately
+
+    :param args: a jsonargparse.Namespace object configuring the run's parameters
+    :param parser: a jsonargparse.ArgumentParser object which is needed for some reason to dump yaml
+    :param deduplicate: if True, check if a run with the same parameters already exists in the
+        experiment and exit early.
+    :param ignore_keys_dedup: an iterable of keys to ignore for the purpose of deduplication
+    :param start_run_kwargs: a dict of kwargs to pass to `mlflow.start_run()`
+    """
+
     def __init__(
         self,
         args: Namespace,
-        deduplicate: bool,
+        parser: ArgumentParser,
+        deduplicate: bool = True,
         ignore_keys_dedup: Optional[Iterable[str]] = None,
         **start_run_kwargs,
     ):
         self._args = args
+        self._parser = parser
         self._deduplicate = deduplicate
         self._ignore_keys_dedup = ignore_keys_dedup
         self._start_run_kwargs = start_run_kwargs
@@ -325,6 +372,8 @@ class fancy_start_run(object):
         # but we will handle the exiting of the `with` in our own __exit__ function.
         self._the_run = mlflow.start_run(**self._start_run_kwargs)
         self._the_run.__enter__()
+
+        log_params_and_config(self._args, self._parser)
 
         # --- starting here it's as-if we're inside the 'with mlflow.start_run' block ---
         return self._the_run
