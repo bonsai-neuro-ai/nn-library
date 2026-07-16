@@ -237,7 +237,15 @@ gen = (
 cache = Memory(Path(".cache") / str(gen))
 run_nuc_norm_test = cache.cache(run_nuc_norm_test, ignore=["gen"])
 
-methods = ["true", "plugin", "LOO[ab]", "LOO[ortho]"]
+methods = [
+    "true",
+    "plugin",
+    "LOO[ab]",
+    "LOO[ortho]",
+    "LOO[secular]",
+    "LOO[rank1]",
+    "LOO[brute_force]",
+]
 results = []
 for m in np.logspace(1, 4, 7).astype(int):
     print("m =", m)
@@ -250,18 +258,19 @@ df = pd.DataFrame(results)
 
 # %%
 
+suffix = "_conv" if CONVOLUTIONAL else ""
+
 true_val = df[df["method"] == "true"].iloc[0]["norm"]
 sns.lineplot(data=df, x="m", y="norm", hue="method")
 plt.xscale("log")
 plt.ylim(0.5 * true_val, 1.5 * true_val)
-plt.savefig(f"nuc_norm_bias_n{gen.n}_k{gen.k}_conv.png")
+plt.savefig(f"nuc_norm_bias_n{gen.n}_k{gen.k}{suffix}.png")
 plt.show()
-
 
 # %%
 
 sns.lineplot(data=df, x="m", y="time", hue="method")
 plt.xscale("log")
 plt.yscale("log")
-plt.savefig(f"nuc_norm_timing_n{gen.n}_k{gen.k}_conv.png")
+plt.savefig(f"nuc_norm_timing_n{gen.n}_k{gen.k}{suffix}.png")
 plt.show()

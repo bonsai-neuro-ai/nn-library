@@ -73,27 +73,37 @@ def _prepare_xval(
     centered samples x_c = x_i - mu_x, y_c = y_i - mu_y, the leave-one-out centered scatter
     satisfies
 
-        sum_{j != i} (x_j - mu_x^{-i})(y_j - mu_y^{-i})^T = S - M/(M-1) * x_c y_c^T,
+        S^{-i} := sum_{j != i} (x_j - mu_x^{-i})(y_j - mu_y^{-i})^T = S - M/(M-1) * x_c y_c^T,
 
-    i.e. the downdated *centered* cross-covariance is (up to positive scale, which is irrelevant to
-    the polar factor) the same rank-1 downdate as before with coefficient 1/(M-1) instead of 1/M
-    and with fully-centered vectors. Additionally,
+    where S = sum_j (x_j - mu_x)(y_j - mu_y)^T is the full centered scatter. The polar factor is
+    invariant to positive scaling, so we may work with any positive multiple of S^{-i}. Dividing
+    by the full-data covariance normalization (M-1) gives, with cov_xy = S/(M-1),
+
+        polar(S^{-i}) = polar( cov_xy - (M/(M-1)^2) * x_c y_c^T ).
+
+    Both the centered and uncentered cases are captured by a single downdate denominator
+
+        cov_xy_denom = (M - dof)^2 / M          # centered (dof=1): (M-1)^2/M -> coeff M/(M-1)^2
+                                                # uncentered (dof=0): M       -> coeff 1/M
+
+    Additionally, for the evaluation vectors,
 
         x_i - mu_x^{-i} = M/(M-1) * (x_i - mu_x),
 
     so evaluating the bilinear form with downdated-mean-centered vectors is the same as using
-    full-mean-centered vectors scaled by (M/(M-1))^2.
+    full-mean-centered vectors scaled by (M/(M-1))^2 = M^2/(M-dof)^2 (which is 1 when uncentered).
 
-    Returns (matX, matY, cov_xy_denom, downdate_mean_factor) such that each estimator
-    downdates by ``x y^T / cov_xy_denom`` and multiplies the final per-sample values by
+    Returns (matX, matY, cov_xy_denom, downdate_mean_factor) such that each estimator downdates
+    by ``x y^T / cov_xy_denom`` and multiplies the final per-sample values by
     ``downdate_mean_factor``.
     """
     # No special logic for centering is required in this function since XValStats is expected to
     # have means set to zero and dof set to 0 in the uncentered case.
     matX = matX - stats.mean_x.unsqueeze(0)
     matY = matY - stats.mean_y.unsqueeze(0)
-    # cov_xy is normalized by 1/m if uncentered or 1/(m-1) if centered
-    cov_xy_denom = float(stats.m_total - stats.dof)
+    # Downdate denominator (M-dof)^2/M: reproduces the recompute-from-scratch LOO estimand exactly
+    # (uncentered -> M, i.e. unchanged; centered -> (M-1)^2/M, i.e. coefficient M/(M-1)^2).
+    cov_xy_denom = float(stats.m_total - stats.dof) ** 2 / float(stats.m_total)
     # mean downdates apply a 1.0 multiplier if uncentered or a m/(m-1) multiplier twice,
     # once for x and once for y, if centered.
     downdate_mean_factor = float(stats.m_total) ** 2 / float(stats.m_total - stats.dof) ** 2
@@ -150,7 +160,7 @@ def _augmented_core(
 def xval_nuc_norm_cross_cov(
     matX: torch.Tensor,
     matY: torch.Tensor,
-    method: Literal["brute_force", "rank1", "ab", "orthogonalize"] = "brute_force",
+    method: Literal["brute_force", "rank1", "ab", "orthogonalize", "secular"] = "brute_force",
     k: Optional[int] = None,
     centered: Optional[bool] = None,
     stats: Optional[XValStats] = None,
@@ -164,8 +174,8 @@ def xval_nuc_norm_cross_cov(
 
     :param matX: batch of samples from distribution X.
     :param matY: batch of samples from distribution Y.
-    :param method: "brute_force", "rank1", "ab", "orthogonalize", controls dispatch to various
-        accelerated estimators. brute_force is slow but exact.
+    :param method: "brute_force", "rank1", "ab", "orthogonalize", "secular", controls dispatch to
+        various accelerated estimators. brute_force is slow but exact.
     :param k: optionally truncate the global SVD to rank k before downdating.
     :param centered: whether to subtract empirical means from x and y when estimating cov_xy. Only
         use this argument if matX and matY are the full data. If calculating batch-wise, pass in
@@ -200,6 +210,8 @@ def xval_nuc_norm_cross_cov(
         return xval_nuc_norm_cross_cov_ab(matX, matY, stats, k=k)
     elif method == "orthogonalize":
         return xval_nuc_norm_cross_cov_orthogonalize(matX, matY, stats, k=k)
+    elif method == "secular":
+        return xval_nuc_norm_cross_cov_secular(matX, matY, stats, k=k)
     else:
         raise ValueError(f"method {method} is not supported")
 
@@ -245,7 +257,7 @@ def xval_nuc_norm_cross_cov_rank1(
     (matches `brute_force` when k is None).
     """
     matX, matY, denom, scale = _prepare_xval(matX, matY, stats)
-    u, s, vh = stats.u, stats.s, stats.vh
+    u, s, vh = _truncate_svd(stats.u, stats.s, stats.vh, k)
     Pt, Qt, K = _augmented_core(matX, matY, u, s, vh, denom)
 
     U_k, _, Vh_k = torch.linalg.svd(K, full_matrices=False)
@@ -277,7 +289,7 @@ def xval_nuc_norm_cross_cov_ab(
     the `rank1` method in float32).
     """
     matX, matY, denom, scale = _prepare_xval(matX, matY, stats)
-    u, s, vh = stats.u, stats.s, stats.vh
+    u, s, vh = _truncate_svd(stats.u, stats.s, stats.vh, k)
     Pt, Qt, K = _augmented_core(matX, matY, u, s, vh, denom)
 
     # Polar factor of each K via (K K^T)^{-1/2} K, batched
@@ -301,10 +313,85 @@ def xval_nuc_norm_cross_cov_orthogonalize(
     band around 1 rather than exactly to 1, so expect small relative error vs brute_force.
     """
     matX, matY, denom, scale = _prepare_xval(matX, matY, stats)
-    u, s, vh = stats.u, stats.s, stats.vh
+    u, s, vh = _truncate_svd(stats.u, stats.s, stats.vh, k)
     Pt, Qt, K = _augmented_core(matX, matY, u, s, vh, denom)
 
     vals = torch.einsum("bi,bij,bj->b", Pt, orthogonalize(K), Qt)
+    return scale * vals.mean()
+
+
+@torch.jit.script
+def xval_nuc_norm_cross_cov_secular(
+    matX: torch.Tensor,
+    matY: torch.Tensor,
+    stats: XValStats,
+    k: Optional[int] = None,
+    eps: float = 1e-18,
+) -> torch.Tensor:
+    """Leave-one-out estimator via the Gandhi-Rajgor (2017) secular / Cauchy structure,
+    specialized to the bilinear form (never forms a singular vector).
+
+    Background: the other fast methods obtain polar(K_i) densely (SVD / (KK^T)^{-1/2}K /
+    Newton-Schulz). Gandhi & Rajgor instead update a rank-1-perturbed SVD by (a) solving a
+    secular equation for the updated singular values mu_j and (b) assembling the updated singular
+    vectors as columns of a Cauchy matrix (FMM-accelerated). We only ever want the scalar pbar^T
+    polar(K_i) qbar, so we can skip the singular vectors entirely.
+    """
+    matX, matY, denom, scale = _prepare_xval(matX, matY, stats)
+    u, s, vh = _truncate_svd(stats.u, stats.s, stats.vh, k)
+    Pt, Qt, K = _augmented_core(matX, matY, u, s, vh, denom)
+
+    d = K.shape[1]
+    rho = 1.0 / denom
+    sigma = torch.cat([s, torch.zeros(1, device=s.device, dtype=s.dtype)])  # (d,)
+    max_rank = min(matX.shape[1], matY.shape[1])
+
+    # Updated singular values mu_j (values only, batched): (b, d)
+    mu = torch.linalg.svdvals(K)
+    mu2 = mu * mu
+
+    # Pole denominators sigma_k^2 - mu_j^2: (b, j, k)
+    s2 = (sigma * sigma).view(1, 1, d)
+    den = s2 - mu2.unsqueeze(2)
+    # Removable singularities (mu_j^2 == sigma_k^2) are measure-zero; floor magnitude to avoid inf.
+    den = torch.where(den.abs() < eps, torch.full_like(den, eps), den)
+
+    P = Pt.unsqueeze(1)  # (b, 1, k)
+    Q = Qt.unsqueeze(1)  # (b, 1, k)
+    sig = sigma.view(1, 1, d)
+
+    Phi_pp = torch.sum(P * P / den, dim=2)  # (b, j)
+    Phi_pq = torch.sum(sig * P * Q / den, dim=2)
+
+    # 2x2 null vector of [[a, rho*mu*Phi_pp],[rho*mu*Phi_qq, a]] with a = rho*Phi_pq - 1.
+    # At a true root a^2 = rho^2 mu^2 Phi_pp Phi_qq, so (t, s) ~ (rho*mu*Phi_pp, -a) is null;
+    # its internal sign is fixed (only the overall sign is free, and t*s is invariant to it).
+    a = rho * Phi_pq - 1.0
+    t_un = rho * mu * Phi_pp  # (b, j)
+    s_un = -a  # (b, j)
+
+    # Cauchy singular vectors (unnormalized) from (t_un, s_un): (b, j, k)
+    mu_col = mu.unsqueeze(2)
+    tj = t_un.unsqueeze(2)
+    sj = s_un.unsqueeze(2)
+    uhat = rho * (tj * sig * Q + mu_col * sj * P) / den
+    vhat = rho * (sj * sig * P + mu_col * tj * Q) / den
+
+    nu = torch.linalg.norm(uhat, dim=2)  # (b, j)
+    nv = torch.linalg.norm(vhat, dim=2)
+    nu = torch.where(nu < eps, torch.full_like(nu, eps), nu)
+    nv = torch.where(nv < eps, torch.full_like(nv, eps), nv)
+
+    # Normalized scalar projections t_j = pbar^T uhat_j, s_j = qbar^T vhat_j
+    t = torch.sum(P * uhat, dim=2) / nu  # (b, j)
+    sproj = torch.sum(Q * vhat, dim=2) / nv
+
+    ts = t * sproj  # (b, j)
+    # Drop components beyond the LOO matrix's max possible rank (their mu_j ~ 0 and the
+    # corresponding t_j s_j ~ 0 already; masking keeps parity with the other methods' truncation).
+    if d > max_rank:
+        ts = ts[:, :max_rank]
+    vals = ts.sum(dim=1)  # (b,)
     return scale * vals.mean()
 
 
