@@ -53,7 +53,7 @@ class TestSafeLstsq(unittest.TestCase):
 
                         w, b = safe_regression(x, y, bias=b_)
 
-                        torch.testing.assert_close(x_test @ w + b, y_test, atol=1e-4, rtol=1e-3)
+                        torch.testing.assert_close(x_test @ w + b, y_test)
 
     def test_lstsq_xtx(self):
         b_ = False
@@ -68,7 +68,7 @@ class TestSafeLstsq(unittest.TestCase):
                     solution2 = safe_linalg_lstsq(x.T @ x, x.T @ y, symmetric=True)
 
                     # Check that the solutions are close
-                    torch.testing.assert_close(solution1, solution2, atol=1e-4, rtol=1e-3)
+                    torch.testing.assert_close(solution1, solution2)
 
 
 class TestStreamingRegression(unittest.TestCase):
@@ -107,16 +107,14 @@ class TestStreamingRegression(unittest.TestCase):
                                 100, 10, 10, 5, bias=b_, device=d_, rank=r_
                             )
 
-                            slr = StreamingLinearRegression()
+                            slr = StreamingLinearRegression(bias=b_)
                             for i in range(0, x.shape[0], 10):
                                 x_batch = x[i : i + 10]
                                 y_batch = y[i : i + 10]
                                 slr.add_batch(x_batch, y_batch)
-                            w, b = slr.solve(bias=b_, ridge=ridge_)
+                            w, b = slr.solve(ridge=ridge_)
 
                             # Check that the solution matches lstsq
                             w2, b2 = safe_regression(x, y, bias=b_, ridge=ridge_)
 
-                            torch.testing.assert_close(
-                                x_test @ w + b, x_test @ w2 + b2, atol=1e-4, rtol=1e-3
-                            )
+                            torch.testing.assert_close(x_test @ w + b, x_test @ w2 + b2)

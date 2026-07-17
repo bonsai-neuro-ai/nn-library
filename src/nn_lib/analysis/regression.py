@@ -1,6 +1,6 @@
 import torch
 
-from nn_lib.utils import RunningAverage, eye_like
+from nn_lib.utils import RunningCovariance, eye_like
 
 
 def safe_linalg_lstsq(
@@ -41,13 +41,15 @@ def safe_regression(
     if bias:
         m_x, m_y = x.mean(dim=0), y.mean(dim=0)
         x, y = x - m_x, y - m_y
+        dof = 1
     else:
         m_x, m_y = x.new_zeros(n_x), y.new_zeros(n_y)
+        dof = 0
 
-    a = torch.einsum("bi,bj->ij", x, x) / m
-    b = torch.einsum("bi,bj->ij", x, y) / m
+    a = torch.einsum("bi,bj->ij", x, x) / (m - dof)
+    b = torch.einsum("bi,bj->ij", x, y) / (m - dof)
 
-    w = safe_linalg_lstsq(a + ridge * torch.eye(n_x, device=a.device), b)
+    w = safe_linalg_lstsq(a + ridge * eye_like(a), b)
     b = m_y - m_x @ w
 
     return w, b
@@ -69,35 +71,25 @@ class StreamingLinearRegression(object):
     See also `safe_regression` for an in-memory version that works on a single batch.
     """
 
-    def __init__(self):
-        self._mean_x: RunningAverage[torch.Tensor] = RunningAverage()
-        self._mean_y: RunningAverage[torch.Tensor] = RunningAverage()
-        self._xtx: RunningAverage[torch.Tensor] = RunningAverage()
-        self._xty: RunningAverage[torch.Tensor] = RunningAverage()
+    def __init__(self, bias: bool = True):
+        self._stats_xx = RunningCovariance(centered=bias)
+        self._stats_xy = RunningCovariance(centered=bias)
 
     @property
     def mean_x(self) -> torch.Tensor:
-        if self._mean_x.avg is None:
-            raise ValueError("No batches have been added yet. Call add_batch() first.")
-        return self._mean_x.avg
+        return self._stats_xx.mu_x
 
     @property
     def mean_y(self) -> torch.Tensor:
-        if self._mean_y.avg is None:
-            raise ValueError("No batches have been added yet. Call add_batch() first.")
-        return self._mean_y.avg
+        return self._stats_xy.mu_y
 
     @property
     def xtx(self) -> torch.Tensor:
-        if self._xtx.avg is None:
-            raise ValueError("No batches have been added yet. Call add_batch() first.")
-        return self._xtx.avg
+        return self._stats_xx.avg
 
     @property
     def xty(self) -> torch.Tensor:
-        if self._xty.avg is None:
-            raise ValueError("No batches have been added yet. Call add_batch() first.")
-        return self._xty.avg
+        return self._stats_xy.avg
 
     @torch.no_grad()
     def add_batch(self, from_data: torch.Tensor, to_data: torch.Tensor) -> None:
@@ -108,32 +100,22 @@ class StreamingLinearRegression(object):
         :param to_data: target data of shape (batch, n_targets).
         """
         batch_size = from_data.size(0)
-        self._mean_x.update(torch.mean(from_data, dim=0), batch_size)
-        self._mean_y.update(torch.mean(to_data, dim=0), batch_size)
-        self._xtx.update(torch.einsum("bi,bj->ij", from_data, from_data) / batch_size, batch_size)
-        self._xty.update(torch.einsum("bi,bj->ij", from_data, to_data) / batch_size, batch_size)
+        self._stats_xx.update(from_data)
+        self._stats_xy.update(from_data, to_data)
 
     @torch.no_grad()
-    def solve(self, bias: bool = True, ridge: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
+    def solve(self, ridge: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Solve the linear regression using the accumulated statistics.
 
-        :param bias: if True, fit an intercept by centering the data (so the intercept is
-            estimated as mean_y - mean_x @ w).
         :param ridge: L2 regularization strength added to the diagonal of X^T X before solving.
         :return: (w, b) where w has shape (n_features, n_targets) and b has shape (n_targets,).
         """
-        if bias:
-            ata = self.xtx - self.mean_x[:, None] @ self.mean_x[None, :]
-            atb = self.xty - self.mean_x[:, None] @ self.mean_y[None, :]
+        ata = self.xtx
+        atb = self.xty
 
-            w = safe_linalg_lstsq(ata + ridge * eye_like(ata), atb)
-            b = self.mean_y - self.mean_x @ w
-        else:
-            ata = self.xtx
-            atb = self.xty
-
-            w = safe_linalg_lstsq(ata + ridge * eye_like(ata), atb)
-            b = torch.zeros_like(self.mean_y)
+        w = safe_linalg_lstsq(ata + ridge * eye_like(ata), atb)
+        # If 'self._bias' is false then the means are zero and this still works
+        b = self.mean_y - self.mean_x @ w
 
         return w, b

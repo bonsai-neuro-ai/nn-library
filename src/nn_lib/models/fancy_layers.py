@@ -64,12 +64,10 @@ class Regressable(abc.ABC):
         x, y = self._prep_regressors(from_data, to_data)
         if batched:
             if self.regression_handler is None:
-                self.regression_handler = StreamingLinearRegression()
+                self.regression_handler = StreamingLinearRegression(bias=self.has_bias)
             self.regression_handler.add_batch(x, y)
             if final_batch:
-                self._set_regression_results(
-                    *self.regression_handler.solve(bias=self.has_bias, ridge=ridge)
-                )
+                self._set_regression_results(*self.regression_handler.solve(ridge=ridge))
         else:
             self._set_regression_results(*safe_regression(x, y, bias=self.has_bias, ridge=ridge))
         return self
