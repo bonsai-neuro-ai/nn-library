@@ -24,32 +24,34 @@ def procrustes_alt(x, y, scaled, centered, cross_validated):
     dof = 0
     if centered:
         dof = 1
-        x = x - x.mean(dim=0, keepdim=True)
-        y = y - y.mean(dim=0, keepdim=True)
+        mux = torch.mean(x, dim=0)
+        muy = torch.mean(y, dim=0)
+    else:
+        mux = torch.zeros_like(x[0])
+        muy = torch.zeros_like(y[0])
+    cx, cy = x - mux, y - muy
 
-    term_xx = torch.sum(x * x) / (m - dof)
-    term_yy = torch.sum(y * y) / (m - dof)
+    term_xx = torch.sum(cx * cx) / (m - dof)
+    term_yy = torch.sum(cy * cy) / (m - dof)
 
     if cross_validated:
         term_xy = RunningAverage()
-        xy = x.T @ y
-        for test_x, test_y in zip(x, y):
-            u, _, vT = torch.linalg.svd(xy - test_x[:, None] * test_y[None, :], full_matrices=False)
-            # where test_x = x_i-mu_x, we need to downdate the mean here too in the 'centered'
-            # case. What we want is dx = (x_i-(mu_x*m-x_i)/(m-1)) = (m/(m-1))(x_i-mu_x). Likewise
-            # for dy. And since the einsum is bilinear in the term_x and term_y parts,
-            # we can just scale the result by (m/(m-dof)) twice. Long story short, both the
-            # 'centered' and the 'uncentered' cases are handled if we scale the result by (m/(
-            # m-dof))**2
-            term_xy.update(
-                torch.einsum("i,ik,kj,j->", test_x, u, vT, test_y) * (m / (m - dof)) ** 2, 1
-            )
+        for i, (x_i, y_i) in enumerate(zip(x, y)):
+            mask = torch.ones(m, dtype=torch.bool)
+            mask[i] = False
+            if centered:
+                # Get new 'downdated' means; don't use the means from above
+                mux = torch.mean(x[mask], dim=0)
+                muy = torch.mean(y[mask], dim=0)
+            xy = (x[mask] - mux[None]).T @ (y[mask] - muy[None])
+            u, _, vT = torch.linalg.svd(xy, full_matrices=False)
+            term_xy.update(torch.einsum("i,ik,kj,j->", x_i - mux, u, vT, y_i - muy), 1)
         term_xy = term_xy.avg
     else:
         # Align x to y; the optimal rotation Q = u @ vT
-        u, _, vT = torch.linalg.svd(x.T @ y)
-        x = x @ u @ vT
-        term_xy = torch.sum(x * y) / (m - dof)
+        u, _, vT = torch.linalg.svd(cx.T @ cy)
+        cx = cx @ u @ vT
+        term_xy = torch.sum(cx * cy) / (m - dof)
 
     if scaled:
         return torch.arccos(torch.clip(term_xy / torch.sqrt(term_xx * term_yy), -1.0, 1.0))
