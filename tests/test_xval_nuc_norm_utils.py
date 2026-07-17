@@ -52,21 +52,23 @@ def _recompute_loo_reference(x: torch.Tensor, y: torch.Tensor, centered: bool) -
     with `_prepare_xval`, so it catches errors in the centering / downdate-coefficient algebra
     (which method-vs-brute_force tests cannot, since all methods share `_prepare_xval`).
     """
-    M = x.shape[0]
+    m = x.shape[0]
     vals = []
-    for i in range(M):
-        mask = torch.ones(M, dtype=torch.bool, device=x.device)
+    for i in range(m):
+        mask = torch.ones(m, dtype=torch.bool, device=x.device)
         mask[i] = False
-        xr, yr = x[mask], y[mask]
+        x_drop_i, y_drop_i = x[mask], y[mask]
         if centered:
-            mux_i, muy_i = xr.mean(0), yr.mean(0)
+            mux_drop_i, muy_drop_i = x_drop_i.mean(0), y_drop_i.mean(0)
         else:
-            mux_i = torch.zeros(x.shape[1], dtype=x.dtype, device=x.device)
-            muy_i = torch.zeros(y.shape[1], dtype=y.dtype, device=y.device)
-        cov_i = (xr - mux_i).T @ (yr - muy_i)  # positive scale irrelevant to polar factor
-        u_i, _, vh_i = torch.linalg.svd(cov_i, full_matrices=False)
-        xq, yq = x[i] - mux_i, y[i] - muy_i
-        vals.append(yq @ (vh_i.T @ (u_i.T @ xq)))
+            mux_drop_i = torch.zeros(x.shape[1], dtype=x.dtype, device=x.device)
+            muy_drop_i = torch.zeros(y.shape[1], dtype=y.dtype, device=y.device)
+        cov_i = (x_drop_i - mux_drop_i).T @ (
+            y_drop_i - muy_drop_i
+        )  # positive scale irrelevant to polar factor
+        u_drop_i, _, vh_drop_i = torch.linalg.svd(cov_i, full_matrices=False)
+        x_i, y_i = x[i] - mux_drop_i, y[i] - muy_drop_i
+        vals.append(y_i @ (vh_drop_i.T @ (u_drop_i.T @ x_i)))
     return torch.stack(vals).mean()
 
 
@@ -78,28 +80,28 @@ def _truncated_brute_force_reference(
     (no augmented-core trick). This mirrors what rank1/ab compute but forms every matrix in the
     ambient space, so it validates the `_truncate_svd`-then-`_augmented_core` reduction.
 
-    Uses the same centering/downdate coefficients as `_prepare_xval` (denom = (M-dof)^2/M,
-    scale = (M/(M-dof))^2), since the k-path shares that preprocessing; well-defined only for
-    k <= min(n_x, n_y, M-1-dof) (the leave-one-out rank -- see code/verify_k_truncation.py).
+    Uses the same centering/downdate coefficients as `_prepare_xval` (denom = (m-dof)^2/m,
+    scale = (m/(m-dof))^2), since the k-path shares that preprocessing; well-defined only for
+    k <= min(n_x, n_y, m-1-dof)
     """
-    M, nx = x.shape
+    m, nx = x.shape
     ny = y.shape[1]
     dof = 1 if centered else 0
     mux = x.mean(0) if centered else torch.zeros(nx, dtype=x.dtype, device=x.device)
     muy = y.mean(0) if centered else torch.zeros(ny, dtype=y.dtype, device=y.device)
     xc, yc = x - mux, y - muy
-    cov = (xc.T @ yc) / (M - dof)
+    cov = (xc.T @ yc) / (m - dof)
     U, S, Vh = torch.linalg.svd(cov, full_matrices=False)
     U, S, Vh = U[:, :k], S[:k], Vh[:k, :]
     cov_k = (U * S) @ Vh
-    denom = (M - dof) ** 2 / M
-    scale = M**2 / (M - dof) ** 2
+    denom = (m - dof) ** 2 / m
+    scale = m**2 / (m - dof) ** 2
     vals = []
-    for i in range(M):
-        D = cov_k - xc[i][:, None] * yc[i][None, :] / denom
-        u_i, _, vh_i = torch.linalg.svd(D, full_matrices=False)
-        vals.append(yc[i] @ (vh_i.T @ (u_i.T @ xc[i])))
-    return scale * torch.stack(vals).mean()
+    for i in range(m):
+        cov_downdate = cov_k - xc[i][:, None] * yc[i][None, :] / denom
+        u_i, _, vh_i = torch.linalg.svd(cov_downdate, full_matrices=False)
+        vals.append(scale * yc[i] @ (vh_i.T @ (u_i.T @ xc[i])))
+    return torch.stack(vals).mean()
 
 
 # Shapes exercised by the independent-reference tests: small M (large m/(m-1) correction),
@@ -122,14 +124,8 @@ _K_TRUNC_CASES = [(20, 7, 7, 3), (12, 8, 5, 4), (40, 100, 60, 20), (30, 12, 8, 6
 
 class TestLinalgUtils(unittest.TestCase):
     def test_exact_methods_match_recompute_loo_reference(self):
-        """Anchor every *exact* method to an INDEPENDENT recompute-from-scratch LOO reference,
-        for both dof=0 (uncentered) and dof=1 (centered).
-
-        This is the important non-circular check: brute_force, rank1 and ab all share
-        `_prepare_xval`, so testing them against each other cannot catch an error in the
-        centering / downdate-coefficient algebra (it previously hid an O(1/M) bug). The
-        reference here recomputes each leave-one-out fit from scratch and shares no code with
-        the estimators.
+        """Validate every *exact* method (not the 'orthogonal' method) vs an independent
+        recompute-from-scratch LOO reference calculation.
         """
         for dt in [torch.float64]:
             for device in DEVICES:
@@ -179,10 +175,8 @@ class TestLinalgUtils(unittest.TestCase):
                             assert_close(approx, exact, atol=ORTHO_ATOL, rtol=ORTHO_RTOL)
 
     def test_orthogonalize_matches_recompute_loo_reference(self):
-        """Integration smoke test: the approximate (Newton-Schulz) method is wired correctly into
-        the estimator and lands in the right ballpark vs the independent LOO reference. The tight
-        accuracy claim lives in test_orthogonalize_kernel_matches_exact_polar; this only confirms
-        the kernel is actually used and the pipeline plumbing is right, at the loose NS tol.
+        """Same as test_exact_methods_match_recompute_loo_reference but for 'orthogonalize' method
+        and larger closeness tolerances.
         """
         for dt in [torch.float64]:
             for device in DEVICES:
