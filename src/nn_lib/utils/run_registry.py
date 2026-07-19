@@ -3,8 +3,9 @@
 Design
 ------
 - A run is identified by its *spec*: a mapping (or jsonargparse.Namespace) of **identity**
-  parameters -- the things that make this run this run. Execution details (device, batch_size,
-  num_workers, data_root) should never be in the spec.
+  parameters -- the things that make this run unique. Execution details (device, batch_size,
+  num_workers, data_root) should never be in the spec. Terminology note: 'params' are all input
+  parameters; a 'spec' is the subset of those parameters that specify unique behavior.
 - Specs are canonicalized (Path -> str, Enum -> value, ...) and dumped with `yaml.safe_dump`. This
   means we're serializing arbitrary input arguments, so we cannot guarantee 100% match between
   original runs and re-runs from the dumped config. But we do the best we can.
@@ -29,6 +30,7 @@ import hashlib
 import re
 import traceback
 from contextlib import contextmanager
+from copy import deepcopy
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional
@@ -73,15 +75,12 @@ def _plain_value(v: Any) -> Any:
     if isinstance(v, (set, frozenset)):
         return sorted((_plain_value(x) for x in v), key=str)
     if isinstance(v, Enum):
-        return v.value
+        # jsonargparse parses enums by their name, not their value.
+        return v.name
     if isinstance(v, Path):
         return str(v)
     if dataclasses.is_dataclass(v) and not isinstance(v, type):
-        # Mirror jsonargparse's class_path/init_args serialization convention.
-        return {
-            "class_path": f"{type(v).__module__}.{type(v).__qualname__}",
-            "init_args": {f.name: _plain_value(getattr(v, f.name)) for f in dataclasses.fields(v)},
-        }
+        return {f.name: _plain_value(getattr(v, f.name)) for f in dataclasses.fields(v)}
     if isinstance(v, (str, int, float, bool)) or v is None:
         return v
     # Fallback for arbitrary objects: str(v) serialization is acceptable only if deterministic
@@ -129,6 +128,32 @@ def canonical_strings(params: "Namespace | Mapping[str, Any]") -> dict[str, str]
 
 def dump_config_yaml(params: "Namespace | Mapping[str, Any]") -> str:
     return yaml.safe_dump(to_plain(params), sort_keys=True)
+
+
+def select_spec(
+    params: "Namespace | Mapping[str, Any]", drop: Optional[Iterable[str]] = ("config",)
+) -> "Namespace | Mapping[str, Any]":
+    """Helper to strip certain keys from a set of params to make a new spec."""
+    if drop is None:
+        drop = []
+    else:
+        drop = set(drop)
+
+    # Don't modify in-place
+    params = deepcopy(params)
+
+    if len(drop) == 0:
+        return params
+
+    for drop_key in drop:
+        if "." in drop_key:
+            raise NotImplementedError("Dropping nested keys is not currently supported.")
+        if drop_key not in params:
+            # If asking to drop something that isn't there, it's a no-op
+            continue
+        params.pop(drop_key)
+
+    return params
 
 
 ###############################################
@@ -282,5 +307,6 @@ def logged_run(
 
 __all__ = [
     "logged_run",
+    "select_spec",
     "RunIndex",
 ]

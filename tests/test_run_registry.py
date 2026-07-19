@@ -25,8 +25,8 @@ from nn_lib.utils.run_registry import (
     hash_spec,
     logged_run,
     to_plain,
+    select_spec,
 )
-
 
 ####################
 # Shared fixtures  #
@@ -92,7 +92,7 @@ class TestCanonicalizeToPlain(unittest.TestCase):
 
     def test_path_enum_set(self):
         plain = to_plain({"p": Path("/data"), "m": Mode.FAST, "s": {3, 1, 2}})
-        self.assertEqual(plain, {"p": "/data", "m": "fast", "s": [1, 2, 3]})
+        self.assertEqual(plain, {"p": "/data", "m": "FAST", "s": [1, 2, 3]})
 
     def test_nested_dicts_lists_and_namespaces(self):
         ns = Namespace(
@@ -111,8 +111,8 @@ class TestCanonicalizeToPlain(unittest.TestCase):
 
     def test_dataclass_instance_serializes_with_class_path(self):
         plain = to_plain({"metric": Metric(p=3.5)})
-        self.assertTrue(plain["metric"]["class_path"].endswith("Metric"))
-        self.assertEqual(plain["metric"]["init_args"], {"centered": True, "p": 3.5})
+        self.assertEqual(plain["metric"]["centered"], True)
+        self.assertEqual(plain["metric"]["p"], 3.5)
 
     def test_deterministic_str_object_accepted(self):
         result = to_plain({"x": NiceRepr()})
@@ -132,7 +132,7 @@ class TestCanonicalizeToPlain(unittest.TestCase):
 
     def test_yaml_roundtrip(self):
         spec = {"a": 1, "root": Path("/data"), "mode": Mode.SLOW, "nested": {"b": [1, 2]}}
-        self.assertEqual(yaml.safe_load(dump_config_yaml(spec)), to_plain(spec))
+        self.assertDictEqual(yaml.safe_load(dump_config_yaml(spec)), to_plain(spec))
 
 
 class TestFlatteningAndNamespaceConvention(unittest.TestCase):
@@ -152,7 +152,6 @@ class TestHashingAndCanonicalStrings(unittest.TestCase):
         """The same run described via CLI parsing or via a hand-built dict must
         produce the same canonical strings and hash."""
         cfg = make_parser().parse_args(["--root", "/data", "--metric.p", "3.5"])
-        cfg.pop("tags")
         program = {"root": Path("/data"), "metric": {"centered": True, "p": 3.5}, "name": "resnet"}
         self.assertEqual(canonical_strings(cfg), canonical_strings(program))
         self.assertEqual(hash_spec(cfg), hash_spec(program))
@@ -294,6 +293,157 @@ class TestMLFlowIntegration(unittest.TestCase):
             for spec in todo:
                 with logged_run(spec, index=index):
                     mlflow.log_metric("distance", 1.0)
+
+    def test_cli_config_yaml_roundtrip_via_logged_run_artifact(self):
+        """Round-trip: CLI args -> logged config.yaml -> --config=config.yaml.
+
+        Verifies that parser loading from dumped yaml reproduces the same run spec
+        (canonical params) and deterministic metric.
+        """
+        parser = ArgumentParser(exit_on_error=False)
+        parser.add_argument("--model", type=str)
+        parser.add_argument("--root", type=Path)
+        parser.add_argument("--mode", type=Mode)
+        parser.add_argument("--metric", type=Metric, default=Metric())
+        parser.add_argument("--layers", type=list[int])
+        parser.add_argument("--options", type=dict, default={})
+        parser.add_argument("--enabled", type=bool, default=True)
+        parser.add_argument("--config", action="config")
+
+        cli_args = [
+            "--model",
+            "vit_b_16",
+            "--root",
+            "/data/imagenet",
+            "--mode",
+            "SLOW",
+            "--metric.p",
+            "1.5",
+            "--metric.centered",
+            "false",
+            "--layers",
+            "[1, 2, 4]",
+            "--options",
+            '{"alpha": 0.1, "nested": {"k": "v"}}',
+            "--enabled",
+            "true",
+        ]
+
+        # First run from direct CLI arguments.
+        spec1 = select_spec(parser.parse_args(cli_args))
+        with logged_run(spec1):
+            params1 = canonical_strings(spec1)
+            # Deterministic metric computed from canonicalized params.
+            metric1 = float(len(params1) + sum(len(v) for v in params1.values()))
+            mlflow.log_metric("roundtrip_score", metric1)
+
+        run1 = mlflow.search_runs(output_format="list")[0]
+        client = mlflow.MlflowClient()
+
+        with TemporaryDirectory() as tmp_path:
+            config_path = client.download_artifacts(run1.info.run_id, "config.yaml", str(tmp_path))
+
+            # Second run by reloading via --config=config.yaml.
+            spec2 = select_spec(parser.parse_args([f"--config={config_path}"]))
+            with logged_run(spec2):
+                params2 = canonical_strings(spec2)
+                metric2 = float(len(params2) + sum(len(v) for v in params2.values()))
+                mlflow.log_metric("roundtrip_score", metric2)
+
+        runs = mlflow.search_runs(output_format="list")
+        self.assertEqual(len(runs), 2)
+
+        # Identify first and second runs robustly (newest first from search_runs).
+        by_id = {r.info.run_id: r for r in runs}
+        run1 = by_id[run1.info.run_id]
+        run2 = next(r for r in runs if r.info.run_id != run1.info.run_id)
+
+        # Same canonical params => same hash tag and same MLflow param strings.
+        self.assertEqual(canonical_strings(spec1), canonical_strings(spec2))
+        self.assertEqual(
+            run1.data.tags[PARAMS_HASH_MLFLOW_TAG],
+            run2.data.tags[PARAMS_HASH_MLFLOW_TAG],
+        )
+        self.assertEqual(run1.data.params, run2.data.params)
+
+        # Metric parity confirms behavior parity for this deterministic computation.
+        self.assertAlmostEqual(
+            run1.data.metrics["roundtrip_score"],
+            run2.data.metrics["roundtrip_score"],
+        )
+
+
+class TestSelectSpec(unittest.TestCase):
+    def test_default_drops_config_key_from_namespace(self):
+        parser = ArgumentParser(exit_on_error=False)
+        parser.add_argument("--model", type=str)
+        parser.add_argument("--config", action="config")
+        args = parser.parse_args(["--model", "resnet18"])
+
+        selected = select_spec(args)
+        self.assertNotIn("config", selected)
+        self.assertEqual(selected["model"], "resnet18")
+
+    def test_default_drops_config_key_from_mapping(self):
+        selected = select_spec({"model": "resnet18", "config": "/tmp/run.yaml"})
+        self.assertEqual(selected, {"model": "resnet18"})
+
+    def test_explicit_drop_removes_runtime_keys(self):
+        raw = {
+            "model": "vit_b_16",
+            "metric": {"p": 1.0, "centered": True},
+            "device": "cuda:0",
+            "num_workers": 8,
+            "seed": 123,
+        }
+        selected = select_spec(raw, drop=["device", "num_workers"])
+        self.assertEqual(
+            selected,
+            {
+                "model": "vit_b_16",
+                "metric": {"p": 1.0, "centered": True},
+                "seed": 123,
+            },
+        )
+
+    def test_keep_overrides_default_drop_for_config(self):
+        parser = ArgumentParser(exit_on_error=False)
+        parser.add_argument("--model", type=str)
+        parser.add_argument("--config", action="config")
+        args = parser.parse_args(["--model", "resnet18"])
+
+        # Override the default; use drop=None to tell it *not* to drop the config
+        selected = select_spec(args, drop=None)
+        self.assertIn("config", selected)
+
+    def test_output_is_compatible_with_registry_canonicalization(self):
+        parser = ArgumentParser(exit_on_error=False)
+        parser.add_argument("--root", type=Path)
+        parser.add_argument("--mode", type=Mode)
+        parser.add_argument("--metric", type=Metric, default=Metric())
+        parser.add_argument("--config", action="config")
+        args = parser.parse_args(["--root", "/data", "--mode", "SLOW", "--metric.p", "3.5"])
+
+        spec = select_spec(args)
+        # No crash and stable canonical output for downstream hashing/logging.
+        strings = canonical_strings(spec)
+        self.assertIn("root", strings)
+        self.assertIn("mode", strings)
+        self.assertIn("metric.p", strings)
+        self.assertIn("metric.centered", strings)
+        self.assertNotIn("config", strings)
+
+    def test_drop_missing_key_is_noop(self):
+        selected = select_spec({"model": "resnet18"}, drop=["does_not_exist"])
+        self.assertEqual(selected, {"model": "resnet18"})
+
+    def test_dropping_nested_key_raises_error(self):
+        params = {"a": 1, "b": 2, "c": {"d": 3, "e": 4}}
+        spec = select_spec(params, drop=["b"])
+        self.assertDictEqual(spec, {"a": 1, "c": {"d": 3, "e": 4}})
+
+        with self.assertRaises(NotImplementedError):
+            _ = select_spec(params, drop=["c.d"])
 
 
 if __name__ == "__main__":
