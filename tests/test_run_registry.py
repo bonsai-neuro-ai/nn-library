@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 
 import mlflow
 import yaml
-from jsonargparse import ArgumentParser, Namespace
+from jsonargparse import ArgumentParser, Namespace, lazy_instance
 
 from nn_lib.utils.run_registry import (
     PARAMS_HASH_MLFLOW_TAG,
@@ -58,7 +58,10 @@ def _plain_python_function():
 
 
 def _specs():
-    base = dict(model="resnet18", metric=Metric(), mode=Mode.FAST)
+    # NB: metric is a plain dict, not Metric(...): instantiated dataclasses are rejected by
+    # to_plain because their fields alone cannot carry class identity (see
+    # TestCanonicalizeToPlain.test_dataclass_instances_raise).
+    base = dict(model="resnet18", metric={"centered": True, "p": 2.0}, mode=Mode.FAST)
     return [{**base, "layer": f"conv{i}"} for i in range(3)]
 
 
@@ -68,6 +71,33 @@ def make_parser():
 
     parser = ArgumentParser(exit_on_error=False)
     parser.add_function_arguments(f)
+    return parser
+
+
+class Backbone:
+    """Base class parsed in jsonargparse's subclass mode ({class_path, init_args})."""
+
+    def __init__(self, hidden: int = 8):
+        self.hidden = hidden
+
+
+class ConvBackbone(Backbone):
+    pass
+
+
+class AttnBackbone(Backbone):
+    pass
+
+
+def _class_path(cls: type) -> str:
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def make_subclass_parser(with_config: bool = False) -> ArgumentParser:
+    parser = ArgumentParser(exit_on_error=False)
+    parser.add_subclass_arguments(Backbone, "model")
+    if with_config:
+        parser.add_argument("--config", action="config")
     return parser
 
 
@@ -109,10 +139,16 @@ class TestCanonicalizeToPlain(unittest.TestCase):
             },
         )
 
-    def test_dataclass_instance_serializes_with_class_path(self):
-        plain = to_plain({"metric": Metric(p=3.5)})
-        self.assertEqual(plain["metric"]["centered"], True)
-        self.assertEqual(plain["metric"]["p"], 3.5)
+    def test_dataclass_instances_raise(self):
+        """Instantiated dataclasses are rejected. Serializing fields alone would drop class
+        identity, so two subclass-mode dataclasses with identical fields would silently
+        hash-collide (and never match their pre-instantiation {class_path, init_args} form
+        either). Fail loudly instead; spec authors should use the pre-instantiation config
+        or an equivalent plain dict."""
+        with self.assertRaises(TypeError) as cm:
+            to_plain({"metric": Metric(p=3.5)})
+        self.assertIn("dataclass", str(cm.exception))
+        self.assertIn("'metric'", str(cm.exception))  # error names the offending key
 
     def test_deterministic_str_object_accepted(self):
         result = to_plain({"x": NiceRepr()})
@@ -129,6 +165,7 @@ class TestCanonicalizeToPlain(unittest.TestCase):
             with self.assertRaises(TypeError) as cm:
                 to_plain({"bad": bad})
             self.assertIn("memory address", str(cm.exception))
+            self.assertIn("'bad'", str(cm.exception))  # error names the offending key
 
     def test_yaml_roundtrip(self):
         spec = {"a": 1, "root": Path("/data"), "mode": Mode.SLOW, "nested": {"b": [1, 2]}}
@@ -167,6 +204,106 @@ class TestHashingAndCanonicalStrings(unittest.TestCase):
         self.assertNotEqual(hash_spec({"a": 1}), hash_spec({"a": 2}))
         # int 1 vs str "1": both stringify to "1" -- documented behavior, pin it.
         self.assertEqual(hash_spec({"a": 1}), hash_spec({"a": "1"}))
+
+
+#############################################
+# jsonargparse class_path/init_args pattern #
+#############################################
+
+
+class TestClassPathInitArgsPattern(unittest.TestCase):
+    """jsonargparse subclass-mode configs.
+
+    The supported spec form is the *pre-instantiation* config, where a subclass-typed
+    argument parses to Namespace(class_path=..., init_args=Namespace(...)). These tests pin:
+    canonical structure, class_path participating in run identity, CLI/program-built parity,
+    the config.yaml round trip, and loud failure for post-instantiation objects.
+    """
+
+    def test_pre_instantiation_subclass_config_canonicalizes(self):
+        cfg = make_subclass_parser().parse_args(
+            [f"--model={_class_path(ConvBackbone)}", "--model.init_args.hidden=16"]
+        )
+        self.assertEqual(
+            to_plain(cfg),
+            {"model": {"class_path": _class_path(ConvBackbone), "init_args": {"hidden": 16}}},
+        )
+        self.assertEqual(
+            canonical_strings(cfg),
+            {
+                "model.class_path": _class_path(ConvBackbone),
+                "model.init_args.hidden": "16",
+            },
+        )
+
+    def test_class_path_is_part_of_run_identity(self):
+        parser = make_subclass_parser()
+        spec_a = parser.parse_args([f"--model={_class_path(ConvBackbone)}"])
+        spec_b = parser.parse_args([f"--model={_class_path(AttnBackbone)}"])
+        # Identical __init__ signatures -> identical flat key sets, so a grid over these
+        # subclasses satisfies the RunIndex shared-key-set contract...
+        self.assertEqual(canonical_strings(spec_a).keys(), canonical_strings(spec_b).keys())
+        # ...but identical init_args must NOT dedup across different class_path.
+        self.assertNotEqual(hash_spec(spec_a), hash_spec(spec_b))
+
+    def test_cli_and_program_built_subclass_specs_hash_identically(self):
+        cli = make_subclass_parser().parse_args(
+            [f"--model={_class_path(ConvBackbone)}", "--model.init_args.hidden=16"]
+        )
+        program = {"model": {"class_path": _class_path(ConvBackbone), "init_args": {"hidden": 16}}}
+        self.assertEqual(canonical_strings(cli), canonical_strings(program))
+        self.assertEqual(hash_spec(cli), hash_spec(program))
+
+    def test_subclass_config_yaml_roundtrip(self):
+        """dump_config_yaml of a subclass spec must reload via --config to the same hash."""
+        parser = make_subclass_parser(with_config=True)
+        spec1 = select_spec(
+            parser.parse_args(
+                [f"--model={_class_path(ConvBackbone)}", "--model.init_args.hidden=16"]
+            )
+        )
+        with TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text(dump_config_yaml(spec1))
+            spec2 = select_spec(parser.parse_args([f"--config={config_path}"]))
+        self.assertEqual(canonical_strings(spec1), canonical_strings(spec2))
+        self.assertEqual(hash_spec(spec1), hash_spec(spec2))
+
+    def test_instantiated_objects_fail_loudly(self):
+        parser = make_subclass_parser()
+        cfg = parser.parse_args([f"--model={_class_path(ConvBackbone)}"])
+        init = parser.instantiate_classes(cfg)
+        self.assertIsInstance(init.model, ConvBackbone)  # sanity: post-instantiation form
+        with self.assertRaises(TypeError) as cm:
+            to_plain(init)
+        # The error must name the offending key and steer users back to the
+        # pre-instantiation config.
+        self.assertIn("'model'", str(cm.exception))
+        self.assertIn("instantiate_classes", str(cm.exception))
+
+    def test_live_instance_default_fails_loudly_with_guidance(self):
+        """A live instance used as an argument default is kept as-is in the parsed config when
+        the argument isn't overridden -- surprising, because the user never called
+        instantiate_classes. The error must name the offending key and point at the intended
+        fixes (lazy_instance, or a class_path/init_args dict default). NB: pinned against the
+        installed jsonargparse's instance-default behavior; if this fails at the isinstance
+        sanity check, the installed version serializes instance defaults itself and this guard is
+        moot."""
+        parser = ArgumentParser(exit_on_error=False)
+        parser.add_argument("--model", type=Backbone, default=lazy_instance(ConvBackbone, hidden=4))
+        cfg = parser.parse_args([])
+        instantiated_cfg = parser.instantiate(cfg)
+        self.assertIsInstance(instantiated_cfg.model, ConvBackbone)  # jsonargparse instantiated the default
+
+        # Trying to serialize the instantiated cfg should raise errors
+        with self.assertRaises(TypeError) as cm:
+            to_plain(instantiated_cfg)
+        msg = str(cm.exception)
+        self.assertIn("'model'", msg)
+        self.assertIn("lazy_instance", msg)
+
+        # ..but instantiating the raw/lazy config is fine:
+        _ = to_plain(cfg)
 
 
 ##########################
@@ -371,6 +508,24 @@ class TestMLFlowIntegration(unittest.TestCase):
             run1.data.metrics["roundtrip_score"],
             run2.data.metrics["roundtrip_score"],
         )
+
+    def test_subclass_grid_dedup_uses_class_path_identity(self):
+        """Grid over two subclasses with identical init_args: finishing one run must not
+        mark the other as done, in the live index or a fresh one built from the store."""
+        parser = make_subclass_parser()
+        conv, attn = (
+            parser.parse_args([f"--model={_class_path(cls)}", "--model.init_args.hidden=8"])
+            for cls in (ConvBackbone, AttnBackbone)
+        )
+        index = RunIndex.from_experiment(keys=conv)
+        with logged_run(conv, index=index):
+            pass
+        self.assertIn(conv, index)
+        self.assertNotIn(attn, index)
+        # A fresh index built from the MLflow store agrees (tag-based path).
+        fresh = RunIndex.from_experiment(keys=conv)
+        self.assertIn(conv, fresh)
+        self.assertNotIn(attn, fresh)
 
 
 class TestSelectSpec(unittest.TestCase):

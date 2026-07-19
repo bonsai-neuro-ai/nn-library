@@ -9,6 +9,10 @@ Design
 - Specs are canonicalized (Path -> str, Enum -> value, ...) and dumped with `yaml.safe_dump`. This
   means we're serializing arbitrary input arguments, so we cannot guarantee 100% match between
   original runs and re-runs from the dumped config. But we do the best we can.
+- jsonargparse subclass-typed arguments are supported in their *pre-instantiation*
+  `{class_path, init_args}` form. Live objects -- anything after `parser.instantiate_classes`,
+  live-instance argument defaults, and instantiated dataclasses -- are rejected loudly, since
+  canonicalizing them would silently break deduplication (see `to_plain`).
 - Deduplication is one MLflow query per process. Each run logged through `logged_run` carries a
   `run_registry.params_hash` tag; the index matches on that tag first, so correctness does not
   depend on reproducing MLflow's param serialization (which stringifies with `str()` and silently
@@ -57,30 +61,62 @@ PARAMS_HASH_MLFLOW_TAG = "run_registry.params_hash"
 # e.g. "<Foo object at 0x7f3a2c1d5e80>" or "<function f at 0x7f...>".
 _MEMORY_ADDRESS = re.compile(r"0x[0-9a-fA-F]{6,}")
 
+# Shared guidance appended to canonicalization errors. Live objects usually get into a spec in
+# one of two ways, and the fix differs; name both so the error is actionable.
+_INSTANTIATED_OBJECT_HINT = (
+    "Specs must be built from pre-instantiation values; live objects usually get into a spec "
+    "in one of two ways. (1) The config was passed through parser.instantiate_classes(): pass "
+    "the config from parser.parse_args() instead, which keeps subclass-typed arguments in "
+    "their serializable {class_path, init_args} form. (2) An argument default is a live "
+    "instance, which jsonargparse keeps as-is when the argument is not overridden: declare "
+    "the default with jsonargparse.lazy_instance(Cls, ...) or as a "
+    "{'class_path': ..., 'init_args': ...} dict so the parsed config stays serializable. "
+    "Alternatively, if this value is an execution detail rather than part of the run's "
+    "identity, drop it from the spec (see select_spec); or, for a plain class, give it a "
+    "deterministic __str__ usable for uniqueness/deduplication."
+)
+
 
 def to_plain(params: "Namespace | Mapping[str, Any]") -> dict[str, Any]:
-    """Convert a spec to a plain nested dict of yaml-safe values."""
+    """Convert a spec to a plain nested dict of yaml-safe values.
+
+    Raises TypeError (naming the offending key) for values that cannot be canonicalized
+    deterministically: objects whose str() embeds a memory address, and dataclass instances
+    (whose fields alone cannot carry class identity).
+    """
     if isinstance(params, Namespace):
         params = params.as_dict()
-    return {str(k): _plain_value(v) for k, v in params.items()}
+    return {str(k): _plain_value(v, _path=str(k)) for k, v in params.items()}
 
 
-def _plain_value(v: Any) -> Any:
+def _sub_path(path: str, key: Any) -> str:
+    return f"{path}.{key}" if path else str(key)
+
+
+def _plain_value(v: Any, _path: str = "") -> Any:
     if isinstance(v, Namespace):  # nested jsonargparse Namespace
         v = v.as_dict()
     if isinstance(v, Mapping):
-        return {str(k): _plain_value(x) for k, x in v.items()}
+        return {str(k): _plain_value(x, _path=_sub_path(_path, k)) for k, x in v.items()}
     if isinstance(v, (list, tuple)):
-        return [_plain_value(x) for x in v]
+        return [_plain_value(x, _path=f"{_path}[{i}]") for i, x in enumerate(v)]
     if isinstance(v, (set, frozenset)):
-        return sorted((_plain_value(x) for x in v), key=str)
+        return sorted((_plain_value(x, _path=_path) for x in v), key=str)
     if isinstance(v, Enum):
         # jsonargparse parses enums by their name, not their value.
         return v.name
     if isinstance(v, Path):
         return str(v)
     if dataclasses.is_dataclass(v) and not isinstance(v, type):
-        return {f.name: _plain_value(getattr(v, f.name)) for f in dataclasses.fields(v)}
+        # Serializing fields alone would drop class identity, so two dataclass types with
+        # identical fields would silently deduplicate against each other -- fail loudly.
+        raise TypeError(
+            f"Cannot canonicalize dataclass instance {type(v).__qualname__} at spec key "
+            f"{_path!r}: serializing its fields would drop class identity, so two dataclass "
+            f"types with identical fields would silently deduplicate against each other. If "
+            f"the intended class is unambiguous (a fixed-class argument), use a plain dict of "
+            f"its fields instead. " + _INSTANTIATED_OBJECT_HINT
+        )
     if isinstance(v, (str, int, float, bool)) or v is None:
         return v
     # Fallback for arbitrary objects: str(v) serialization is acceptable only if deterministic
@@ -90,12 +126,9 @@ def _plain_value(v: Any) -> Any:
     s = str(v)
     if _MEMORY_ADDRESS.search(s):
         raise TypeError(
-            f"Cannot canonicalize {type(v).__qualname__} value {s!r}: its string form contains a "
-            f"memory address, so its hash would differ between processes and deduplication would "
-            f"silently break. Build specs from serializable values instead. Recommended: pass the "
-            f"pre-instantiation jsonargparse config (before parser.instantiate_classes), or give "
-            f"this class a deterministic __str__ that can be used for uniqueness/deduplication "
-            f"purposes."
+            f"Cannot canonicalize {type(v).__qualname__} value {s!r} at spec key {_path!r}: "
+            f"its string form contains a memory address, so its hash would differ between "
+            f"processes and deduplication would silently break. " + _INSTANTIATED_OBJECT_HINT
         )
     return s
 
@@ -185,9 +218,9 @@ class RunIndex:
     then membership tests are O(1) and offline.
 
     :param keys: the identity of a run, given either as an example spec (Namespace or mapping --
-        recommended, since the canonical flat keys like "metric.init_args.p" are derived for you) or
-        as an iterable of canonical flat key strings. All candidate specs must share this key set
-        (the usual grid-of-jobs situation).
+       recommended, since the canonical flat keys like "metric.p" are derived for you) or as an
+       iterable of canonical flat key strings. All candidate specs must share this key set (the
+       usual grid-of-jobs situation).
     """
 
     def __init__(self, keys: "Namespace | Mapping[str, Any] | Iterable[str]"):
