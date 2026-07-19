@@ -6,7 +6,7 @@ Design
   parameters -- the things that make this run unique. Execution details (device, batch_size,
   num_workers, data_root) should never be in the spec. Terminology note: 'params' are all input
   parameters; a 'spec' is the subset of those parameters that specify unique behavior.
-- Specs are canonicalized (Path -> str, Enum -> value, ...) and dumped with `yaml.safe_dump`. This
+- Specs are canonicalized (Path -> str, Enum -> name, ...) and dumped with `yaml.safe_dump`. This
   means we're serializing arbitrary input arguments, so we cannot guarantee 100% match between
   original runs and re-runs from the dumped config. But we do the best we can.
 - jsonargparse subclass-typed arguments are supported in their *pre-instantiation*
@@ -20,13 +20,22 @@ Design
 
 Typical usage::
 
+    # Identity params only. From a CLI: spec = select_spec(parser.parse_args()).
     specs = [dict(modelA=..., layerA=a, layerB=b, ...) for a, b in pairs]
-    run_index = RunIndex.from_experiment(keys=specs[0].keys())
-    to_run = [s for s in specs if s not in run_index]
-    for spec in to_run:
+    run_index = RunIndex.from_experiment(keys=specs[0])
+    for spec in run_index.pending(specs):
         with logged_run(spec, index=run_index):
             ...compute...
             mlflow.log_metric("distance", d)
+
+Known limitations
+-----------------
+- All specs sharing a RunIndex must have the same flat key set. A grid over jsonargparse
+  subclasses whose __init__ signatures differ (different `init_args` keys) violates this and
+  fails loudly with KeyError; per-spec key sets would need a different index design. Recommended
+  workaround for now is to place different init signatures in different experiments/different
+  indexes.
+- Empty-dict values flatten away (`{"tags": {}}` canonicalizes like a spec without "tags").
 """
 
 import dataclasses
@@ -67,10 +76,9 @@ _INSTANTIATED_OBJECT_HINT = (
     "Specs must be built from pre-instantiation values; live objects usually get into a spec "
     "in one of two ways. (1) The config was passed through parser.instantiate_classes(): pass "
     "the config from parser.parse_args() instead, which keeps subclass-typed arguments in "
-    "their serializable {class_path, init_args} form. (2) An argument default is a live "
-    "instance, which jsonargparse keeps as-is when the argument is not overridden: declare "
-    "the default with jsonargparse.lazy_instance(Cls, ...) or as a "
-    "{'class_path': ..., 'init_args': ...} dict so the parsed config stays serializable. "
+    "their serializable {class_path, init_args} form. (2) An argument default was declared "
+    "as a live instance: declare it with jsonargparse.lazy_instance(Cls, ...) or as a "
+    "{'class_path': ..., 'init_args': ...} dict so it stays serializable in parsed configs. "
     "Alternatively, if this value is an execution detail rather than part of the run's "
     "identity, drop it from the spec (see select_spec); or, for a plain class, give it a "
     "deterministic __str__ usable for uniqueness/deduplication."
@@ -141,16 +149,19 @@ def flatten(d: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
     values as opaque leaves, so a CLI-parsed config and an equivalent program-built dict spec
     would flatten to different keys (and hash differently). Flattening the plain-dict form gives
     both Namespace-style and dict-style configs identical results.
+
+    Raises ValueError on dotted-key collisions like {"a.b": 1, "a": {"b": 2}}, which would
+    otherwise silently merge two distinct specs into the same canonical form. Note that empty
+    dict values flatten away (contribute no keys).
     """
     out: dict[str, Any] = {}
     for k, v in d.items():
         key = f"{prefix}{k}"
-        if isinstance(v, Mapping):
-            out.update(flatten(v, prefix=key + "."))
-        else:
-            if key in out:
-                raise ValueError(f"Key collision in flattened dict: {key}")
-            out[key] = v
+        new = flatten(v, prefix=key + ".") if isinstance(v, Mapping) else {key: v}
+        for new_key, new_value in new.items():
+            if new_key in out:
+                raise ValueError(f"Key collision in flattened dict: {new_key}")
+            out[new_key] = new_value
     return out
 
 
@@ -166,7 +177,15 @@ def dump_config_yaml(params: "Namespace | Mapping[str, Any]") -> str:
 def select_spec(
     params: "Namespace | Mapping[str, Any]", drop: Optional[Iterable[str]] = ("config",)
 ) -> "Namespace | Mapping[str, Any]":
-    """Helper to strip certain keys from a set of params to make a new spec."""
+    """Return a copy of `params` with the given top-level keys removed.
+
+    Intended for carving a run's identity *spec* out of full CLI params: dropping the
+    `--config` bookkeeping key (the default) or execution details like device/num_workers.
+
+    :param drop: top-level keys to remove; keys not present are ignored. Defaults to
+        ("config",). Pass None or an empty iterable to keep everything. Dotted/nested keys
+        are not supported.
+    """
     if drop is None:
         drop = []
     else:
@@ -194,8 +213,21 @@ def select_spec(
 ###############################################
 
 
+def _escape(s: str) -> str:
+    # Without escaping, a value containing "\nother_key=..." could make two distinct specs
+    # build byte-identical hash blobs (a silent dedup collision). Escaping keeps the blob
+    # unambiguous while leaving hashes unchanged for specs free of backslashes/newlines.
+    return s.replace("\\", "\\\\").replace("\n", "\\n")
+
+
 def spec_hash(strings: Mapping[str, str], keys: Iterable[str]) -> str:
-    blob = "\n".join(f"{k}={strings[k]}" for k in sorted(keys))
+    """Deterministic hash over sorted "{key}={value}" lines for the selected keys.
+
+    Low-level: `strings` must already be flat canonical strings (see `canonical_strings`);
+    most callers want `hash_spec`. Hashes are stable across versions except for specs whose
+    keys/values contain a backslash or newline (see `_escape`).
+    """
+    blob = "\n".join(f"{_escape(k)}={_escape(strings[k])}" for k in sorted(keys))
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
@@ -240,7 +272,8 @@ class RunIndex:
 
         By default, both FINISHED and RUNNING runs count as duplicates, so parallel workers
         launched against the same grid won't double-book (modulo a small startup race -- see
-        `logged_run(index=...)`).
+        `logged_run(index=...)`). With `experiment_names=None`, mlflow.search_runs searches
+        only the currently-active experiment (i.e. the last `mlflow.set_experiment`).
         """
         index = cls(keys)
         statuses = set(statuses)

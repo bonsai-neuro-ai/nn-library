@@ -183,6 +183,19 @@ class TestFlatteningAndNamespaceConvention(unittest.TestCase):
         theirs.discard("tags")
         self.assertEqual(ours, theirs)
 
+    def test_flatten_rejects_dotted_key_collision(self):
+        """A literal dotted key colliding with nested structure must not silently merge two
+        distinct specs into the same canonical form -- either insertion order fails loudly."""
+        with self.assertRaises(ValueError):
+            flatten({"a.b": 1, "a": {"b": 2}})
+        with self.assertRaises(ValueError):
+            flatten({"a": {"b": 2}, "a.b": 1})
+
+    def test_flatten_empty_dict_values_vanish(self):
+        """Documented behavior: empty dicts contribute no flat keys, so {"tags": {}} is
+        indistinguishable from a spec without "tags" -- pin it."""
+        self.assertEqual(flatten({"a": 1, "tags": {}}), {"a": 1})
+
 
 class TestHashingAndCanonicalStrings(unittest.TestCase):
     def test_cli_config_and_program_dict_hash_identically(self):
@@ -204,6 +217,14 @@ class TestHashingAndCanonicalStrings(unittest.TestCase):
         self.assertNotEqual(hash_spec({"a": 1}), hash_spec({"a": 2}))
         # int 1 vs str "1": both stringify to "1" -- documented behavior, pin it.
         self.assertEqual(hash_spec({"a": 1}), hash_spec({"a": "1"}))
+
+    def test_hash_blob_resists_newline_injection(self):
+        """Values containing newlines must not let two distinct specs build identical hash
+        blobs. Naive "k=v"-joined-by-newline hashing would collide for exactly this pair."""
+        self.assertNotEqual(
+            hash_spec({"a": "x\nb=y", "b": "z"}),
+            hash_spec({"a": "x", "b": "y\nb=z"}),
+        )
 
 
 #############################################
@@ -281,29 +302,29 @@ class TestClassPathInitArgsPattern(unittest.TestCase):
         self.assertIn("'model'", str(cm.exception))
         self.assertIn("instantiate_classes", str(cm.exception))
 
-    def test_live_instance_default_fails_loudly_with_guidance(self):
-        """A live instance used as an argument default is kept as-is in the parsed config when
-        the argument isn't overridden -- surprising, because the user never called
-        instantiate_classes. The error must name the offending key and point at the intended
-        fixes (lazy_instance, or a class_path/init_args dict default). NB: pinned against the
-        installed jsonargparse's instance-default behavior; if this fails at the isinstance
-        sanity check, the installed version serializes instance defaults itself and this guard is
-        moot."""
+    def test_lazy_instance_default_serializes_until_instantiated(self):
+        """The supported way to give a subclass-typed argument an instance-like default:
+        `lazy_instance` keeps the default in serializable {class_path, init_args} form in
+        the parsed config, so the raw parse result canonicalizes fine. Only after
+        instantiation does the config hold a live object -- rejected, with the error naming
+        the offending key and pointing back at the lazy_instance fix."""
         parser = ArgumentParser(exit_on_error=False)
         parser.add_argument("--model", type=Backbone, default=lazy_instance(ConvBackbone, hidden=4))
         cfg = parser.parse_args([])
-        instantiated_cfg = parser.instantiate(cfg)
-        self.assertIsInstance(instantiated_cfg.model, ConvBackbone)  # jsonargparse instantiated the default
 
-        # Trying to serialize the instantiated cfg should raise errors
+        # The un-instantiated config canonicalizes to the class_path/init_args form.
+        plain = to_plain(cfg)
+        self.assertEqual(plain["model"]["class_path"], _class_path(ConvBackbone))
+        self.assertEqual(plain["model"]["init_args"]["hidden"], 4)
+
+        # After instantiation the config holds a live object: rejected, with guidance.
+        instantiated_cfg = parser.instantiate(cfg)
+        self.assertIsInstance(instantiated_cfg.model, ConvBackbone)
         with self.assertRaises(TypeError) as cm:
             to_plain(instantiated_cfg)
         msg = str(cm.exception)
         self.assertIn("'model'", msg)
         self.assertIn("lazy_instance", msg)
-
-        # ..but instantiating the raw/lazy config is fine:
-        _ = to_plain(cfg)
 
 
 ##########################
