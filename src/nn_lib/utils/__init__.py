@@ -3,6 +3,7 @@ wrappers, model utilities, and statistics."""
 
 from .generic import *
 from .linalg import *
+from .run_registry import *
 from .mlflow_cli import *
 from .models import *
 from .stats import *
