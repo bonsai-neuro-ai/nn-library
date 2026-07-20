@@ -1,42 +1,21 @@
-import argparse
 import json
 import os
 import unittest
-from dataclasses import dataclass, Field
-from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import jsonargparse
 import mlflow
-import yaml
 
 from nn_lib.utils import (
     search_single_run_by_params,
-    log_params_and_config,
     open_mlflow_artifact_file,
-    search_runs_by_params,
 )
 from nn_lib.utils.mlflow_cli import (
     save_as_artifact,
     load_artifact,
     flatten_params,
     run_has_params,
-    fancy_start_run,
-    RunExists,
 )
-
-
-@dataclass(frozen=True)
-class DummyNestedConfig:
-    d: int = 3
-    e: int = 4
-
-
-@dataclass(frozen=True)
-class DummyTopLevelConfig:
-    a: int = 1
-    b: int = 2
-    c: DummyNestedConfig = DummyNestedConfig()
 
 
 class DummyBase(object):
@@ -49,85 +28,6 @@ class DummySubclassA(DummyBase):
 
 class DummySubclassB(DummyBase):
     pass
-
-
-class TestFancyUtils(unittest.TestCase):
-    def setUp(self):
-        self.tempdir = TemporaryDirectory()
-        self.uri = os.path.abspath(os.path.join("sqlite:///", self.tempdir.name, "mlflow.db"))
-        mlflow.set_tracking_uri(self.uri)
-        mlflow.set_experiment("test_experiment")
-
-        self.parser = jsonargparse.ArgumentParser()
-        self.parser.add_dataclass_arguments(DummyTopLevelConfig)
-
-    def tearDown(self):
-        self.tempdir.cleanup()
-
-    def test_fancy_run_saves_params(self):
-        args = self.parser.parse_args([])
-        with fancy_start_run(args, self.parser) as run:
-            mlflow.log_metric("value", 100)
-
-        restored = mlflow.get_run(run_id=run.info.run_id)
-        logged_metrics = restored.data.metrics
-        self.assertEqual(logged_metrics["value"], 100)
-
-        logged_params = restored.data.params
-        self.assertEqual(logged_params["a"], str(1))
-        self.assertEqual(logged_params["b"], str(2))
-        self.assertEqual(logged_params["c.d"], str(3))
-        self.assertEqual(logged_params["c.e"], str(4))
-
-    def test_fancy_run_saves_config(self):
-        args = self.parser.parse_args([])
-        with fancy_start_run(args, self.parser) as run:
-            mlflow.log_metric("value", 100)
-
-        with open_mlflow_artifact_file("config.yaml", "r", run.info.run_id) as f:
-            config = yaml.safe_load(f)
-
-        self.assertDictEqual(config, {"a": 1, "b": 2, "c": {"d": 3, "e": 4}})
-
-    def test_fancy_run_dedup(self):
-        # Do a run
-        args = self.parser.parse_args([])
-        with fancy_start_run(args, self.parser):
-            mlflow.log_metric("value", 100)
-        self.assertEqual(len(mlflow.search_runs(output_format="list")), 1)
-
-        # Try to start another run with identical params; assert that it raises an error and that
-        # the total number of runs did not go up
-        with self.assertRaises(RunExists):
-            with fancy_start_run(args, self.parser):
-                mlflow.log_metric("value", 200)
-        self.assertEqual(len(mlflow.search_runs(output_format="list")), 1)
-
-        # Once again try to start a run, this time with different parameters, but those differences
-        # ought to be ignored for deduplicating purposes
-        args.c.d = 12345
-        with self.assertRaises(RunExists):
-            with fancy_start_run(args, self.parser, ignore_keys_dedup="c.d"):
-                mlflow.log_metric("value", 300)
-        self.assertEqual(len(mlflow.search_runs(output_format="list")), 1)
-
-        # Finally, start a new run with *genuinely* new parameters. This should add a second run
-        args.a = 42
-        with fancy_start_run(args, self.parser, ignore_keys_dedup="c.d"):
-            mlflow.log_metric("value", 400)
-        self.assertEqual(len(mlflow.search_runs(output_format="list")), 2)
-
-    def test_fancy_run_disable_dedup(self):
-        args = self.parser.parse_args([])
-        with fancy_start_run(args, self.parser):
-            mlflow.log_metric("value", 100)
-
-        self.assertEqual(len(mlflow.search_runs(output_format="list")), 1)
-
-        with fancy_start_run(args, self.parser, deduplicate=False):
-            mlflow.log_metric("value", 200)
-
-        self.assertEqual(len(mlflow.search_runs(output_format="list")), 2)
 
 
 class TestMLFlowUtils(unittest.TestCase):
@@ -193,9 +93,8 @@ class TestMLFlowUtils(unittest.TestCase):
         args = parser.parse_args(["--arg1", "foo", "--arg2", "DummySubclassA"])
 
         with mlflow.start_run():
-            log_params_and_config(args, parser)
+            mlflow.log_params(flatten_params(args))
             run_id = mlflow.active_run().info.run_id
-            self.assertTrue((Path(mlflow.active_run().info.artifact_uri) / "config.yaml").exists())
         the_run = search_single_run_by_params(experiment_name="test_experiment", params=args)
         self.assertEqual(the_run.info.run_id, run_id)
 
@@ -260,5 +159,34 @@ class TestCLIUtils(unittest.TestCase):
         self.assertEqual(flattened, {"a": 1, "c.e": 4})
 
 
-# class TestMainScriptUtils(unittest.TestCase):
-#     def setUp(self):
+class TestDeprecation(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = TemporaryDirectory()
+        self.uri = os.path.abspath(os.path.join("sqlite:///", self.tempdir.name, "mlflow.db"))
+        mlflow.set_tracking_uri(self.uri)
+        mlflow.set_experiment("test_experiment")
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_flatten_params_deprecation_warning(self):
+        parser = jsonargparse.ArgumentParser()
+        parser.add_argument("--a", default=1)
+        args = parser.parse_args([])
+
+        with self.assertWarns(DeprecationWarning) as cm:
+            flatten_params(args)
+        self.assertIn("run_registry", str(cm.warning))
+
+    def test_run_has_params_deprecation_warning(self):
+        parser = jsonargparse.ArgumentParser()
+        parser.add_argument("--a", default=1)
+        args = parser.parse_args([])
+
+        with mlflow.start_run() as run:
+            mlflow.log_param("a", 1)
+
+        restored_run = mlflow.get_run(run_id=run.info.run_id)
+        with self.assertWarns(DeprecationWarning) as cm:
+            self.assertTrue(run_has_params(restored_run, args))
+        self.assertIn("run_registry", str(cm.warning))
