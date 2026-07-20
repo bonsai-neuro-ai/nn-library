@@ -16,24 +16,21 @@ free to reach out to us or open an issue on the GitHub repository.
 
 Using `pip`:
 
-    pip install bonsai-nn-library
+    pip install bonsai-nn-library[cpu]  # specifies torch-on-cpu
+    pip install bonsai-nn-library[cu130]  # specifies torch-on-cuda-13.0
 
 Using [`uv`](https://docs.astral.sh/uv/) (in a project):
 
-    uv add bonsai-nn-library
+    uv add bonsai-nn-library --extra cpu  # for cpu
+    uv add bonsai-nn-library --extra cu130  # for cuda 13.0
 
-Or, as a drop-in replacement for `pip`:
-
-    uv pip install bonsai-nn-library
-
-__CUDA versioning note:__ configuring CUDA dependencies for pytorch/nvidia-dali is notoriously 
-tricky. At time of writing this, there are some open PyTorch issues and open PEPs that will 
-someday make life easier. For now, what we have is some hard-coded `nvidia-dali-cuda130` and 
-torch `cu132` dependencies in our`pyproject.toml` file. If you have a different CUDA version, 
-it's possible this will work as-is, or it's possible you will need to modify the `pyproject.
-toml` file to specify the correct versions. See the disclaimer above: we don't guarantee our 
-library will work for everyone on all systems, but if you have a way to improve it we welcome 
-contributions.
+__CUDA versioning note:__ configuring CUDA dependencies for pytorch is notoriously tricky. More
+generally, `pip` and `uv` were not designed to handle switching between different dependencies on
+host systems with different hardware or driver support. At time of writing this, there are some
+open PyTorch issues and open PEPs that will someday make life easier. For now, our `pyproject.toml`
+file supports `cpu` and `cu130`. For other If you have a different CUDA version, you could update
+our `pyproject.toml`. See the disclaimer above: we don't guarantee our library will work for
+everyone on all systems, but if you have a way to improve it we welcome contributions.
 
 ## Usage
 

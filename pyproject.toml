@@ -26,7 +26,6 @@ dependencies = [
     "matplotlib",
     "mlflow",
     "numpy",
-    "nvidia-dali-cuda130",
     "pandas",
     "parse",
     "pycocotools",
@@ -36,9 +35,7 @@ dependencies = [
     "scipy",
     "seaborn",
     "tabulate",
-    "torch>=2",
     "torchmetrics",
-    "torchvision",
     "tqdm",
 ]
 
@@ -48,14 +45,42 @@ dev = [
     "coverage-badge",
     "interrogate",
 ]
+# CPU/CUDA guide: https://docs.astral.sh/uv/guides/integration/pytorch/#configuring-accelerators-with-optional-dependencies
+cpu = [
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+]
+cu130 = [
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+]
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cu130" },
+    ],
+]
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cuda" }]
-torchvision = [{ index = "pytorch-cuda" }]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu130", extra = "cu130" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu130", extra = "cu130" },
+]
 
 [[tool.uv.index]]
-name = "pytorch-cuda"
-url = "https://download.pytorch.org/whl/cu132"  # SET CUDA MAJOR.MINOR VERSION HERE
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [project.urls]
