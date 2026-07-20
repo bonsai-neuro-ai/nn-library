@@ -9,6 +9,7 @@ import dataclasses
 import enum
 import functools
 import unittest
+from argparse import ArgumentError
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -27,6 +28,7 @@ from nn_lib.utils.run_registry import (
     to_plain,
     select_spec,
 )
+
 
 ####################
 # Shared fixtures  #
@@ -89,6 +91,36 @@ class AttnBackbone(Backbone):
     pass
 
 
+class BackboneWithSpec(Backbone):
+    """Showing off the `as_spec()` function."""
+
+    def as_spec(self):
+        return {"type": self.__class__.__qualname__, "hidden": self.hidden}
+
+
+class ConvBackboneWithSpec(BackboneWithSpec):
+    pass
+
+
+class AttnBackboneWithSpec(BackboneWithSpec):
+    pass
+
+
+class BackboneWithSpecAndProperFormat(Backbone):
+    """Showing off the `as_spec()` function *including* saving out proper jsonargparse format."""
+
+    def as_spec(self):
+        return {"class_path": _class_path(self.__class__), "init_args": {"hidden": self.hidden}}
+
+
+class ConvBackboneWithSpecAndProperFormat(BackboneWithSpecAndProperFormat):
+    pass
+
+
+class AttnBackboneWithSpecAndProperFormat(BackboneWithSpecAndProperFormat):
+    pass
+
+
 def _class_path(cls: type) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
@@ -139,16 +171,10 @@ class TestCanonicalizeToPlain(unittest.TestCase):
             },
         )
 
-    def test_dataclass_instances_raise(self):
-        """Instantiated dataclasses are rejected. Serializing fields alone would drop class
-        identity, so two subclass-mode dataclasses with identical fields would silently
-        hash-collide (and never match their pre-instantiation {class_path, init_args} form
-        either). Fail loudly instead; spec authors should use the pre-instantiation config
-        or an equivalent plain dict."""
-        with self.assertRaises(TypeError) as cm:
-            to_plain({"metric": Metric(p=3.5)})
-        self.assertIn("dataclass", str(cm.exception))
-        self.assertIn("'metric'", str(cm.exception))  # error names the offending key
+    def test_dataclass_instances_serialized_by_value(self):
+        """Instantiated dataclasses are serialized like {name: {field1: value1, field2: value2}}"""
+        result = to_plain({"metric": Metric(p=3.5)})
+        self.assertDictEqual(result, {"metric": {"centered": True, "p": 3.5}})
 
     def test_deterministic_str_object_accepted(self):
         result = to_plain({"x": NiceRepr()})
@@ -293,14 +319,25 @@ class TestClassPathInitArgsPattern(unittest.TestCase):
     def test_instantiated_objects_fail_loudly(self):
         parser = make_subclass_parser()
         cfg = parser.parse_args([f"--model={_class_path(ConvBackbone)}"])
-        init = parser.instantiate_classes(cfg)
+        init = parser.instantiate(cfg)
         self.assertIsInstance(init.model, ConvBackbone)  # sanity: post-instantiation form
         with self.assertRaises(TypeError) as cm:
             to_plain(init)
         # The error must name the offending key and steer users back to the
         # pre-instantiation config.
         self.assertIn("'model'", str(cm.exception))
-        self.assertIn("instantiate_classes", str(cm.exception))
+        self.assertIn("memory address", str(cm.exception))
+
+    def test_instantiated_objects_with_as_spec(self):
+        parser = make_subclass_parser()
+
+        cfg = parser.parse_args(
+            [f"--model={_class_path(ConvBackboneWithSpec)}", "--model.init_args.hidden=16"]
+        )
+        init = parser.instantiate(cfg)
+        self.assertIsInstance(init.model, ConvBackboneWithSpec)  # sanity: post-instantiation form
+        result = to_plain(init)
+        self.assertDictEqual(result, {"model": {"type": "ConvBackboneWithSpec", "hidden": 16}})
 
     def test_lazy_instance_default_serializes_until_instantiated(self):
         """The supported way to give a subclass-typed argument an instance-like default:
@@ -452,7 +489,7 @@ class TestMLFlowIntegration(unittest.TestCase):
                 with logged_run(spec, index=index):
                     mlflow.log_metric("distance", 1.0)
 
-    def test_cli_config_yaml_roundtrip_via_logged_run_artifact(self):
+    def test_cli_config_yaml_roundtrip_via_logged_config(self):
         """Round-trip: CLI args -> logged config.yaml -> --config=config.yaml.
 
         Verifies that parser loading from dumped yaml reproduces the same run spec
@@ -466,25 +503,20 @@ class TestMLFlowIntegration(unittest.TestCase):
         parser.add_argument("--layers", type=list[int])
         parser.add_argument("--options", type=dict, default={})
         parser.add_argument("--enabled", type=bool, default=True)
+        parser.add_argument("--backbone", type=Backbone, default=lazy_instance(ConvBackbone))
         parser.add_argument("--config", action="config")
 
         cli_args = [
-            "--model",
-            "vit_b_16",
-            "--root",
-            "/data/imagenet",
-            "--mode",
-            "SLOW",
-            "--metric.p",
-            "1.5",
-            "--metric.centered",
-            "false",
-            "--layers",
-            "[1, 2, 4]",
-            "--options",
-            '{"alpha": 0.1, "nested": {"k": "v"}}',
-            "--enabled",
-            "true",
+            "--model=vit_b_16",
+            "--root=/data/imagenet",
+            "--mode=SLOW",
+            "--metric.p=1.5",
+            "--metric.centered=false",
+            "--layers=[1, 2, 4]",
+            "--options={'alpha': 0.1, 'nested': {'k': 'v'}}",
+            "--enabled=true",
+            "--backbone=AttnBackbone",
+            "--backbone.hidden=7",
         ]
 
         # First run from direct CLI arguments.
@@ -511,6 +543,8 @@ class TestMLFlowIntegration(unittest.TestCase):
         runs = mlflow.search_runs(output_format="list")
         self.assertEqual(len(runs), 2)
 
+        self.assertDictEqual(params1, params2)
+
         # Identify first and second runs robustly (newest first from search_runs).
         by_id = {r.info.run_id: r for r in runs}
         run1 = by_id[run1.info.run_id]
@@ -529,6 +563,77 @@ class TestMLFlowIntegration(unittest.TestCase):
             run1.data.metrics["roundtrip_score"],
             run2.data.metrics["roundtrip_score"],
         )
+
+    def test_instantiated_backbone_roundtrip_config_fails(self):
+        """Test CLI -> instantiate -> save config.yaml -> new run with --config=config.yaml
+
+        This is *expected to fail* for the `...WithSpec` classes since the instantiation step
+        results in a spec that no longer conforms to the class_path and init_args pattern.
+        """
+        parser = ArgumentParser(exit_on_error=False)
+        parser.add_argument(
+            "--backbone", type=BackboneWithSpec, default=lazy_instance(ConvBackboneWithSpec)
+        )
+        parser.add_argument("--config", action="config")
+
+        cli_args = ["--backbone=AttnBackboneWithSpec", "--backbone.hidden=7"]
+
+        # First run from direct CLI arguments.
+        with logged_run(parser.instantiate(parser.parse_args(cli_args))):
+            pass
+
+        run1 = mlflow.search_runs(output_format="list")[0]
+        client = mlflow.MlflowClient()
+        with TemporaryDirectory() as tmp_path:
+            config_path = client.download_artifacts(run1.info.run_id, "config.yaml", str(tmp_path))
+
+            # Second run by reloading via --config=config.yaml.
+            with self.assertRaises(ArgumentError) as cm:
+                parser.parse_args([f"--config={config_path}"])
+            self.assertIn('key "backbone"', str(cm.exception))
+
+    def test_instantiated_backbone_roundtrip_config_succeeds_with_proper_format(self):
+        """Test CLI -> instantiate -> save config.yaml -> new run with --config=config.yaml
+
+        This is *expected to succeed* with the proper format.
+        """
+        parser = ArgumentParser(exit_on_error=False)
+        parser.add_argument(
+            "--backbone",
+            type=BackboneWithSpecAndProperFormat,
+            default=lazy_instance(ConvBackboneWithSpecAndProperFormat),
+        )
+        parser.add_argument("--config", action="config")
+
+        cli_args = ["--backbone=AttnBackboneWithSpecAndProperFormat", "--backbone.hidden=7"]
+
+        # First run from direct CLI arguments.
+        args1 = parser.instantiate(parser.parse_args(cli_args))
+        with logged_run(select_spec(args1)):
+            pass
+
+        run1 = mlflow.search_runs(output_format="list")[0]
+        client = mlflow.MlflowClient()
+        with TemporaryDirectory() as tmp_path:
+            config_path = client.download_artifacts(run1.info.run_id, "config.yaml", str(tmp_path))
+
+            # Second run by reloading via --config=config.yaml. Unlike the previous test, this
+            # should now work, since the 'as_spec' function returns the jsonargparse-parsable format
+            args2 = parser.instantiate(parser.parse_args([f"--config={config_path}"]))
+            with logged_run(select_spec(args2)):
+                pass
+
+        runs = mlflow.search_runs(output_format="list")
+        self.assertEqual(len(runs), 2)
+
+        run1, run2 = runs
+
+        expected_params = {
+            "backbone.class_path": "test_run_registry.AttnBackboneWithSpecAndProperFormat",
+            "backbone.init_args.hidden": "7",
+        }
+        self.assertDictEqual(run1.data.params, expected_params)
+        self.assertDictEqual(run2.data.params, expected_params)
 
     def test_subclass_grid_dedup_uses_class_path_identity(self):
         """Grid over two subclasses with identical init_args: finishing one run must not

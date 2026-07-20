@@ -72,17 +72,23 @@ _MEMORY_ADDRESS = re.compile(r"0x[0-9a-fA-F]{6,}")
 
 # Shared guidance appended to canonicalization errors. Live objects usually get into a spec in
 # one of two ways, and the fix differs; name both so the error is actionable.
-_INSTANTIATED_OBJECT_HINT = (
-    "Specs must be built from pre-instantiation values; live objects usually get into a spec "
-    "in one of two ways. (1) The config was passed through parser.instantiate_classes(): pass "
-    "the config from parser.parse_args() instead, which keeps subclass-typed arguments in "
-    "their serializable {class_path, init_args} form. (2) An argument default was declared "
-    "as a live instance: declare it with jsonargparse.lazy_instance(Cls, ...) or as a "
-    "{'class_path': ..., 'init_args': ...} dict so it stays serializable in parsed configs. "
-    "Alternatively, if this value is an execution detail rather than part of the run's "
-    "identity, drop it from the spec (see select_spec); or, for a plain class, give it a "
-    "deterministic __str__ usable for uniqueness/deduplication."
-)
+_INSTANTIATED_OBJECT_HINT = """
+Something went wrong trying to parse/serialize a spec containing instantiated objects. This is a 
+problem because the whole idea of a spec is that it provides a reproducible and unique (canonical) 
+representation of a run's config. It's impossible to enforce that on arbitrary object types. Some 
+potential solutions:
+    1. pass pre-instantiated arguments to the index, i.e. delay parser.instantiate(args) until
+       after any index checks. If this is happening due to a default argument, use jsonargparse's
+       lazy_instance function:
+    
+           parser.add_argument(..., default=MyClass(foo=1))  # don't do this!
+           parser.add_argument(..., default=lazy_instance(MyClass, foo=1))  # do this instead!
+ 
+    2. use a dataclass, which we can serialize consistently
+    3. provide an `as_spec()` method on your object returning a more easily serializable mapping
+    4. provide a `__str__()` method on your object that returns a unique string for the relevant
+       spec parameters.
+"""
 
 
 def to_plain(params: "Namespace | Mapping[str, Any]") -> dict[str, Any]:
@@ -90,7 +96,8 @@ def to_plain(params: "Namespace | Mapping[str, Any]") -> dict[str, Any]:
 
     Raises TypeError (naming the offending key) for values that cannot be canonicalized
     deterministically: objects whose str() embeds a memory address, and dataclass instances
-    (whose fields alone cannot carry class identity).
+    (whose fields alone cannot carry class identity). Arbitrary objects can be canonicalized if they
+    provide an `as_spec() -> Mapping` method (preferred) or a `__str__` method (fallback).
     """
     if isinstance(params, Namespace):
         params = params.as_dict()
@@ -104,6 +111,11 @@ def _sub_path(path: str, key: Any) -> str:
 def _plain_value(v: Any, _path: str = "") -> Any:
     if isinstance(v, Namespace):  # nested jsonargparse Namespace
         v = v.as_dict()
+    # Opt-in protocol: objects that know their own spec form provide it here. This is checked first
+    # so as_spec() supersedes any other type checking.
+    as_spec = getattr(v, "as_spec", None)
+    if callable(as_spec) and not isinstance(v, type):
+        return _plain_value(as_spec(), _path=_path)
     if isinstance(v, Mapping):
         return {str(k): _plain_value(x, _path=_sub_path(_path, k)) for k, x in v.items()}
     if isinstance(v, (list, tuple)):
@@ -116,15 +128,10 @@ def _plain_value(v: Any, _path: str = "") -> Any:
     if isinstance(v, Path):
         return str(v)
     if dataclasses.is_dataclass(v) and not isinstance(v, type):
-        # Serializing fields alone would drop class identity, so two dataclass types with
-        # identical fields would silently deduplicate against each other -- fail loudly.
-        raise TypeError(
-            f"Cannot canonicalize dataclass instance {type(v).__qualname__} at spec key "
-            f"{_path!r}: serializing its fields would drop class identity, so two dataclass "
-            f"types with identical fields would silently deduplicate against each other. If "
-            f"the intended class is unambiguous (a fixed-class argument), use a plain dict of "
-            f"its fields instead. " + _INSTANTIATED_OBJECT_HINT
-        )
+        return {
+            f.name: _plain_value(getattr(v, f.name), _path=_sub_path(_path, f.name))
+            for f in dataclasses.fields(v)
+        }
     if isinstance(v, (str, int, float, bool)) or v is None:
         return v
     # Fallback for arbitrary objects: str(v) serialization is acceptable only if deterministic
