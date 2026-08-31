@@ -3,9 +3,9 @@
 ![Test coverage](badges/coverage.svg)
 ![Docstring coverage](badges/interrogate_badge.svg)
 
-We in the [BONSAI Lab](https://bonsai-neuro-ai.com) do research on neural networks, among other 
-things, that requires loading/training/reconfiguring neural network models. This library is a 
-work-in-progress suite of in-house tools to address some pain-points we've encountered in our 
+We in the [BONSAI Lab](https://bonsai-neuro-ai.com) do research on neural networks, among other
+things, that requires loading/training/reconfiguring neural network models. This library is a
+work-in-progress suite of in-house tools to address some pain-points we've encountered in our
 research workflow.
 
 We make no guarantees about the stability or usability of this library, but we hope that it can be
@@ -34,7 +34,7 @@ everyone on all systems, but if you have a way to improve it we welcome contribu
 
 ## Usage
 
-The top-level import is `nn_lib`. Say you want to use one of our "fancy layers" like a low-rank 
+The top-level import is `nn_lib`. Say you want to use one of our "fancy layers" like a low-rank
 convolution. You can do so like this:
 
 ```python
@@ -54,7 +54,7 @@ model = nn.Sequential(
 ## Useful thing \#1: improved `GraphModule`s.
 
 PyTorch was not originally designed to handle explicit computation graphs, but it was added somewhat
-later in the `torch.fx` module. Others might use  tensorflow or jax for this, but we like PyTorch. 
+later in the `torch.fx` module. Others might use tensorflow or jax for this, but we like PyTorch.
 The `torch.fx.GraphModule` class is the built-in way to handle computation graphs in PyTorch, but it
 lacks some features that we find useful. We have extended the `GraphModule` class in our
 `GraphModulePlus` class, which inherits from `GraphModule` and adds some further functionality.
@@ -66,7 +66,7 @@ utilities like
 * `GraphModulePlus.set_output(layer_name)`: use this to chop off the head of a model and make it
   output from a specific layer.
 * `GraphModulePlus.new_from_merge(...)`: use this to merge or "stitch" existing models together. See
-   `demos/demo_stitching.py` for a worked out example.
+  `demos/demo_stitching.py` for a worked out example.
 
 We've also done some metaprogramming trickery so that if you import `GraphModulePlus` anywhere in
 your code, it will automatically inject itself into the `torch.fx` module. The surprising but
@@ -93,31 +93,40 @@ assert isinstance(graphified_model, GraphModulePlus)
 
 ## Useful thing \#2: Fancy layers.
 
-We have implemented a few "fancy" layers, available via `nn_lib.models` or 
+We have implemented a few "fancy" layers, available via `nn_lib.models` or
 `nn_lib.models.fancy_layers` that we find useful in our research. These include:
 
 * `Regressable` linear layers: a `Protocol` that allows linear layers to be initialized by least
-   squares regression. This is useful for initializing a linear layer to approximate a function
-   learned by a different model.
+  squares regression. This is useful for initializing a linear layer to approximate a function
+  learned by a different model.
 * `RegressableLinear`: a regressable version of `nn.Linear`
 * `LowRankLinear`: a regressable linear layer with a low-rank factorization.
 * `ProcrustesLinear`: a regressable linear layer constrained to rotation, with optional shift (bias)
-   and optional scaling.
+  and optional scaling.
 * A conv2d version of each of the above.
 
 ## Useful thing \#3: MLFLOW utilities.
 
-We use MLFlow to track our experiments. We have a few utilities in `nn_lib.utils.mlfow` that remove
-a bit of boilerplate from our code.
+We use MLFlow to track our experiments. We have a few utilities in `nn_lib.utils.mlfow_cli` that 
+remove a bit of boilerplate from our code. The biggest contribution here is the `run_registry` which
+makes it relatively easy to manage experiments where you want to submit a singleton mlflow run per 
+unique set of parameters.
 
-## Useful thing \#4: Dataset utilities and torchvision wrappers.
+## Useful thing \#4: Linear algebra and regression helpers
 
-__Deprecation warning:__ we have removed the Lightning dependency in favor of pure pytorch + other
-libraries (FFCV / Dali) for fast data loading.
+See `nn_lib.utils.pca` for a variety of tools for analyzing linear subspaces such as effective
+dimensionality and calculating principal components from data that may have missing values.
 
-We have implemented some `LightningDataModule` classes for a few standard vision datasets. See
-`nn_lib.datasets`. We've also implemented a few simple helpers for downloading pretrained models
-from torch hub using the `torchvision` API. See `nn_lib/models/__init__.py`
+See `nn_lib.utils.stats` for helpers calculating variances and covariances, such as Welford's
+algorithm for numerically-stable batch-wise streaming updates of means and variances.
+
+See `nn_lib.utils.xval_nuc_norm` for some novel methods we're developing to calculate *cross-validated*
+nuclear norms of cross-covariance matrices. It's useful for neural (dis)similarity analyses.
+
+See `nn_lib.analysis.regression` for linear regression utilities such as regressing from `x` to `y`
+from streamed/batched data. This is used extensively in `fancy_layers` where we support initializing
+`Linear` or `Conv2d` layers by regressing to expected outputs. `demos/demo_stitching.py` shows off
+this functionality.
 
 ## Useful thing \#5: NTK utilities.
 
