@@ -13,6 +13,7 @@ Deprecated (kept because existing projects depend on them; superseded by
 """
 
 import os
+import pickle
 import tempfile
 import warnings
 from contextlib import contextmanager
@@ -185,21 +186,39 @@ def run_has_params(run: Run, params: Namespace, skip_keys: Optional[Iterable[str
     return True
 
 
-def save_as_artifact(obj: object, path: str | Path, run_id: Optional[str] = None):
-    """Use torch.save to save the given object to the given path as an MLflow artifact in the
-    given run."""
+def save_as_artifact(
+    obj: object,
+    path: str | Path,
+    run_id: Optional[str] = None,
+    backend: Literal["torch", "pickle"] = "torch",
+):
+    """Use torch.save or pickle.dump to save the given object to the given path as an MLflow
+    artifact in the given run.
+    """
     if isinstance(path, str):
         path = Path(path)
     with tempfile.TemporaryDirectory() as tmpdir:
         local_file = Path(tmpdir) / path.name
         remote_path = str(path.parent) if path.parent != Path() else None
-        torch.save(obj, local_file)
+        match backend:
+            case "torch":
+                torch.save(obj, local_file)
+            case "pickle":
+                with open(local_file, "wb") as f:
+                    pickle.dump(obj, f)
+            case _:
+                raise ValueError(f"Unknown backend: {backend}")
         mlflow.log_artifact(str(local_file), artifact_path=remote_path, run_id=run_id)
 
 
-def load_artifact(path: str | Path, run_id: Optional[str] = None) -> object:
-    """Use torch.load to load the given artifact from the specified MLflow run. Path is relative
-    to the artifact URI, just like save_as_artifact()
+def load_artifact(
+    path: str | Path,
+    run_id: Optional[str] = None,
+    backend: Literal["torch", "pickle"] = "torch",
+    **kwargs,
+) -> object:
+    """Use torch.load or pickle.load to load the given artifact from the specified MLflow run.
+    Path is relative to the artifact URI, just like save_as_artifact()
     """
     if isinstance(path, Path):
         path = str(path)
@@ -208,7 +227,14 @@ def load_artifact(path: str | Path, run_id: Optional[str] = None) -> object:
     # Note: despite the name, "downloading" artifacts involves no copying of files if we leave the
     # local path unspecified and the artifacts are stored on this file system.
     local_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path=path)
-    return torch.load(local_path)
+    match backend:
+        case "torch":
+            return torch.load(local_path, **kwargs)
+        case "pickle":
+            with open(local_path, "rb") as f:
+                return pickle.load(f, **kwargs)
+        case _:
+            raise ValueError(f"Unknown backend: {backend}")
 
 
 def _match_nested_key_prefix(key: str, prefix: str) -> bool:
