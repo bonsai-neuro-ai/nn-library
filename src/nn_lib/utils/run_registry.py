@@ -46,11 +46,12 @@ from contextlib import contextmanager
 from copy import deepcopy
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Optional
+from typing import Any, Iterable, Iterator, Mapping, Optional, Literal
 
 import mlflow
 import yaml
-from mlflow.entities import Run
+from mlflow import end_run
+from mlflow.entities import Run, RunStatus
 
 try:
     from jsonargparse import Namespace
@@ -340,6 +341,7 @@ class RunIndex:
 def logged_run(
     spec: "Namespace | Mapping[str, Any]",
     index: Optional[RunIndex] = None,
+    on_error: Literal["reraise", "ignore"] = "reraise",
     **start_run_kwargs,
 ):
     """`with logged_run(spec) as run:` == `with mlflow.start_run() as run:` plus:
@@ -375,8 +377,10 @@ def logged_run(
             yield run
         except BaseException:
             mlflow.log_text(traceback.format_exc(), "error.log")
-            raise
-
+            if on_error == "reraise":
+                raise  # This triggers the normal end_run() call inside ActiveRun.__exit__
+            else:
+                end_run("FAILED")
 
 __all__ = [
     "logged_run",

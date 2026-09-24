@@ -29,7 +29,6 @@ from nn_lib.utils.run_registry import (
     select_spec,
 )
 
-
 ####################
 # Shared fixtures  #
 ####################
@@ -652,6 +651,13 @@ class TestMLFlowIntegration(unittest.TestCase):
         fresh = RunIndex.from_experiment(keys=conv)
         self.assertIn(conv, fresh)
         self.assertNotIn(attn, fresh)
+
+    def test_run_status_fails_error_ignored(self):
+        spec = _specs()[0]
+        with logged_run(spec, on_error="ignore"):
+            raise ValueError("kaboom")
+        run = mlflow.search_runs(output_format="list")[0]
+        self.assertEqual(run.info.status, "FAILED")
 
 
 class TestSelectSpec(unittest.TestCase):
