@@ -57,7 +57,7 @@ def _xval_stats_from_full_data(matX: torch.Tensor, matY: torch.Tensor, centered:
     return XValStats.from_running_covariance(rc)
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def _prepare_xval(
     matX: torch.Tensor,
     matY: torch.Tensor,
@@ -111,7 +111,7 @@ def _prepare_xval(
     return matX, matY, cov_xy_denom, downdate_mean_factor
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def _augmented_core(
     matX: torch.Tensor,
     matY: torch.Tensor,
@@ -216,7 +216,7 @@ def xval_nuc_norm_cross_cov(
         raise ValueError(f"method {method} is not supported")
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def xval_nuc_norm_cross_cov_brute_force(
     matX: torch.Tensor, matY: torch.Tensor, stats: XValStats
 ) -> torch.Tensor:
@@ -243,7 +243,7 @@ def xval_nuc_norm_cross_cov_brute_force(
     return scale * torch.stack(vals).mean()
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def xval_nuc_norm_cross_cov_rank1(
     matX: torch.Tensor,
     matY: torch.Tensor,
@@ -274,7 +274,7 @@ def xval_nuc_norm_cross_cov_rank1(
     return scale * vals.mean()
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def xval_nuc_norm_cross_cov_ab(
     matX: torch.Tensor,
     matY: torch.Tensor,
@@ -300,7 +300,7 @@ def xval_nuc_norm_cross_cov_ab(
     return scale * vals.mean()
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def xval_nuc_norm_cross_cov_orthogonalize(
     matX: torch.Tensor,
     matY: torch.Tensor,
@@ -320,7 +320,7 @@ def xval_nuc_norm_cross_cov_orthogonalize(
     return scale * vals.mean()
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def xval_nuc_norm_cross_cov_secular(
     matX: torch.Tensor,
     matY: torch.Tensor,

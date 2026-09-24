@@ -7,7 +7,7 @@ def eye_like(a: torch.Tensor) -> torch.Tensor:
     return torch.eye(a.shape[0], device=a.device, dtype=a.dtype)
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def _truncate_svd(
     u: torch.Tensor, s: torch.Tensor, vh: torch.Tensor, k: Optional[int] = None
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -27,7 +27,7 @@ def _truncate_svd(
     return u, s, vh
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def rank_one_svd_update(
     U: torch.Tensor,
     S: torch.Tensor,
@@ -73,7 +73,9 @@ def rank_one_svd_update(
     norm_x = torch.linalg.norm(x)
     norm_y = torch.linalg.norm(y)
     max_sigma = S.abs().max() if r > 0 else torch.zeros_like(alpha)
-    tol = max(m, n) * float(eps) * float(max(norm_x, norm_y, max_sigma, 1.0))
+    tol = (
+        max(m, n) * torch.as_tensor(eps) * max([norm_x, norm_y, max_sigma, torch.ones_like(alpha)])
+    )
 
     alpha_nonzero = alpha > tol
     beta_nonzero = beta > tol
@@ -127,7 +129,7 @@ def rank_one_svd_update(
     return U_new, S_k, V_new.T
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def inv_sqrt_spd(B: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     """
     Compute B^{-1/2} for SPD B using eigendecomposition. Supports batched input
@@ -143,7 +145,7 @@ def inv_sqrt_spd(B: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     return inv_sqrt
 
 
-@torch.jit.script
+@torch.compile(dynamic=True)
 def orthogonalize(M: torch.Tensor) -> torch.Tensor:
     """Approximate orthogonalization of a matrix using a fixed number of Newton-Schulz iterations
     with carefully chosen coefficients for stability. Supports batched input of shape
