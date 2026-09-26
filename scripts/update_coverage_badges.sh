@@ -25,14 +25,14 @@ mkdir -p badges
 status=0
 
 echo "==> Running test suite under coverage..."
-PYTHONPATH=src uv run --extra dev coverage run -m unittest discover tests
+PYTHONPATH=src uv run --extra cu130 --extra dev coverage run -m unittest discover tests
 test_status=$?
 [ "$test_status" -ne 0 ] && status=$test_status
 
 # Generate the coverage report/badge from whatever coverage data was collected,
 # even if some tests failed above, so the badge always reflects the latest run.
-uv run --extra dev coverage report
-uv run --extra dev coverage-badge -o badges/coverage.svg -f
+uv run --extra cu130 --extra dev coverage report
+uv run --extra cu130 --extra dev coverage-badge -o badges/coverage.svg -f
 
 echo "==> Checking docstring coverage..."
 uv run --extra dev interrogate -v src/nn_lib --generate-badge badges --badge-style flat
