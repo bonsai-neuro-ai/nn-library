@@ -29,11 +29,22 @@ class RunningAverage[T]:
         self.count += batch_count
 
 
-class RunningVariance(object):
+def _as_batch(values: Iterable[torch.Tensor] | torch.Tensor) -> torch.Tensor:
+    """Return values as a single tensor whose leading dimension is the batch dimension."""
+    if isinstance(values, torch.Tensor):
+        return values
+    values = list(values)
+    if len(values) == 0:
+        return torch.empty(0)
+    return torch.stack(values)
+
+
+class RunningVariance:
     """
-    Welford algorithm to track running variance (more numerically stable than RunningAverage(x*y)
-    - RunningAverage(x)*RunningAverage(y)). Note that where RunningAverage accepts a precomputed
-    average of each batch of values, this class expects the raw values.
+    Tracks running (elementwise) variance using batched Welford / Chan et al. pairwise updates
+    (more numerically stable than RunningAverage(x*y) - RunningAverage(x)*RunningAverage(y)).
+    Note that where RunningAverage accepts a precomputed average of each batch of values, this
+    class expects the raw values.
 
     Whereas we could write RunningAverage in a type-agnostic way, this class assumes torch Tensors.
     It is otherwise too awkward to handle initialization, copies, updates, etc. with generic types.
@@ -56,44 +67,42 @@ class RunningVariance(object):
         self._sum_of_squares: torch.Tensor | None = None
         self._dof = 1 if centered else 0
 
-    @staticmethod
-    def _get_or_init_mean(
-        count: int, centered: bool, mu: torch.Tensor | None, val: torch.Tensor
-    ) -> torch.Tensor:
-        """Instantiate or calculate new means. Does not write to self._mu."""
-        if count <= 1:
-            if centered:
-                return torch.clone(val)
-            else:
-                # Allocate new zeros at initialization matching the specs of val. The 'uncentered'
-                # case is equivalent to setting means equal to zero.
-                return torch.zeros_like(val)
-        else:
-            if centered:
-                new_mu = mu + (val - mu) / count
-                return new_mu
-            else:
-                # Whenever count > 0, we can assume mu was initialized to zeros. Just re-return the
-                # same zeros rather than allocating new zeros.
-                return mu
-
-    def update(self, values_x: Iterable[torch.Tensor]):
+    def update(self, values_x: Iterable[torch.Tensor] | torch.Tensor):
         """
         Fold in a new batch of values. Unlike RunningAverage, this should be a raw set of values.
         In other words, the caller should not precompute any batch means or batch variances.
 
-        :param values_x: an iterable batch of tensor values.
+        :param values_x: a batch of values, either a tensor whose first dimension is the batch
+            dimension (fastest) or an iterable of same-shaped tensors (stacked internally).
         """
-        for x in values_x:
-            self.count += 1
-            new_mu_x = self._get_or_init_mean(self.count, self.centered, self._mu_x, x)
-            if self.count == 1:
-                self._sum_of_squares = torch.zeros_like(x) if self.centered else x**2
+        x = _as_batch(values_x)
+        b = x.shape[0]
+        if b == 0:
+            return
+        m = self.count
+
+        if self.centered:
+            # Per-batch mean and sum of squared deviations
+            mu_b = x.mean(dim=0)
+            dx = x - mu_b
+            s_b = (dx * dx).sum(dim=0)
+            if m == 0:
+                self._mu_x, self._sum_of_squares = mu_b, s_b
             else:
-                # Running updates (see Welford's incremental algorithm in
-                # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance).
-                self._sum_of_squares += (x - new_mu_x) * (x - self._mu_x)
-            self._mu_x = new_mu_x
+                # Pairwise merge: S^{m+b} = S^m + S^b + mb/(m+b) * (mu^b - mu^m)^2
+                delta = mu_b - self._mu_x
+                self._sum_of_squares = (
+                    self._sum_of_squares + s_b + delta * delta * (m * b / (m + b))
+                )
+                self._mu_x = self._mu_x + delta * (b / (m + b))
+        else:
+            s_b = (x * x).sum(dim=0)
+            if m == 0:
+                self._mu_x, self._sum_of_squares = torch.zeros_like(x[0]), s_b
+            else:
+                self._sum_of_squares = self._sum_of_squares + s_b
+
+        self.count = m + b
 
     @property
     def mu_x(self) -> torch.Tensor:
@@ -115,6 +124,11 @@ class RunningVariance(object):
 class RunningCovariance:
     """Like RunningVariance but tracks covariance matrices instead of scalar variances.
 
+    Uses the batched pairwise update of Chan et al. (1983), which reduces to Welford's algorithm
+    for batches of size 1:
+
+        S^{m+b} = S^m + S^b + mb/(m+b) * (mu_x^b - mu_x^m)(mu_y^b - mu_y^m)^T
+
     :param centered: Whether to track empirical means. If False, assumes mu_x=mu_y=zeros and dof=0.
         Default is True, so the resulting variances and covariances match the defaults for np.var
         or torch.var.
@@ -128,60 +142,66 @@ class RunningCovariance:
         self._sum_of_squares: torch.Tensor | None = None
         self._dof = 1 if centered else 0
 
-    @staticmethod
-    def _get_or_init_mean(
-        count: int, centered: bool, mu: torch.Tensor | None, val: torch.Tensor
-    ) -> torch.Tensor:
-        """Instantiate or calculate new means. Does not write to self._mu_x or self._mu_y."""
-        if count <= 1:
-            if centered:
-                return torch.clone(val)
-            else:
-                # Allocate new zeros at initialization matching the specs of val. The 'uncentered'
-                # case is equivalent to setting means equal to zero.
-                return torch.zeros_like(val)
-        else:
-            if centered:
-                new_mu = mu + (val - mu) / count
-                return new_mu
-            else:
-                # Whenever count > 0, we can assume mu was initialized to zeros. Just re-return the
-                # same zeros rather than allocating new zeros.
-                return mu
-
     def update(
-        self, values_x: Iterable[torch.Tensor], values_y: Optional[Iterable[torch.Tensor]] = None
+        self,
+        values_x: Iterable[torch.Tensor] | torch.Tensor,
+        values_y: Optional[Iterable[torch.Tensor] | torch.Tensor] = None,
     ):
         """
         Fold in a new batch of values. Unlike RunningAverage, this should be a raw set of values.
         In other words, the caller should not precompute any batch means or batch variances.
 
-        :param values_x: an iterable of tensor values. If values_x has shape (batch, a, b,
-        c) then  it is flattened, and we keep track of a (a*b*c, a*b*c) shaped covariance matrix.
+        :param values_x: a batch of values, either a tensor whose first dimension is the batch
+            dimension (fastest) or an iterable of same-shaped tensors (stacked internally). If
+            values_x has shape (batch, a, b, c) then each item is flattened, and we keep track of
+            a (a*b*c, a*b*c) shaped covariance matrix.
         :param values_y: If provided, values_y defines the columns of the cross-covariance matrix
-        where values_x defines the rows.
+            where values_x defines the rows. Must have the same batch size as values_x.
         """
+        x = _as_batch(values_x)
+        b = x.shape[0]
+        if b == 0:
+            return
+        x = x.reshape(b, -1)
         if values_y is None:
-            values_y = values_x
+            y = x
+        else:
+            y = _as_batch(values_y).reshape(b, -1)
+            if y.shape[0] != b:
+                raise ValueError(f"Batch sizes differ: x has {b}, y has {y.shape[0]}")
+        m = self.count
 
-        for x, y in zip(values_x, values_y):
-            self.count += 1
-            x, y = x.flatten(), y.flatten()
-            new_mu_x = self._get_or_init_mean(self.count, self.centered, self._mu_x, x)
-            new_mu_y = self._get_or_init_mean(self.count, self.centered, self._mu_y, y)
-            if self.count == 1:
-                self._sum_of_squares = (
-                    torch.zeros((len(x), len(y)), dtype=x.dtype, device=x.device)
-                    if self.centered
-                    else x[:, None] * y[None, :]
-                )
+        if self.centered:
+            # Per-batch means and sum of outer products of deviations, S^b
+            mu_x_b = x.mean(dim=0)
+            dx = x - mu_x_b
+            if values_y is None:
+                mu_y_b, dy = mu_x_b, dx
             else:
-                # Running updates (see the online covariance algorithm in
-                # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance). Note it's
-                # important that the update uses the 'old' mu_x and the 'new' mu_y (or vice versa).
-                self._sum_of_squares += (x - self._mu_x)[:, None] * (y - new_mu_y)[None, :]
-            self._mu_x = new_mu_x
-            self._mu_y = new_mu_y
+                mu_y_b = y.mean(dim=0)
+                dy = y - mu_y_b
+            s_b = dx.T @ dy
+
+            if m == 0:
+                self._mu_x, self._mu_y, self._sum_of_squares = mu_x_b, mu_y_b, s_b
+            else:
+                # Pairwise merge of (old running stats) with (new batch stats)
+                delta_x = mu_x_b - self._mu_x
+                delta_y = mu_y_b - self._mu_y
+                correction = torch.outer(delta_x, delta_y) * (m * b / (m + b))
+                self._sum_of_squares = self._sum_of_squares + s_b + correction
+                self._mu_x = self._mu_x + delta_x * (b / (m + b))
+                self._mu_y = self._mu_y + delta_y * (b / (m + b))
+        else:
+            s_b = x.T @ y
+            if m == 0:
+                self._mu_x = torch.zeros_like(x[0])
+                self._mu_y = torch.zeros_like(y[0])
+                self._sum_of_squares = s_b
+            else:
+                self._sum_of_squares = self._sum_of_squares + s_b
+
+        self.count = m + b
 
     @property
     def mu_x(self) -> torch.Tensor:
@@ -208,6 +228,6 @@ class RunningCovariance:
 
 __all__ = [
     "RunningAverage",
-    "RunningVariance",
     "RunningCovariance",
+    "RunningVariance",
 ]
