@@ -31,7 +31,7 @@ class LRFinder:
         Args:
             model: The PyTorch model to train
             optimizer: The optimizer to use
-            criterion: The loss function
+            criterion: The loss function, with signature criterion(inputs, outputs, targets)
             device: The device to use for training (defaults to CUDA if available)
         """
         self.model = model
@@ -149,7 +149,7 @@ class LRFinder:
             # Forward pass
             self.optimizer.zero_grad()
             outputs = self.model(inputs)
-            loss = self.criterion(outputs, targets)
+            loss = self.criterion(inputs, outputs, targets)
 
             # Handle gradient accumulation
             if accumulation_steps > 1:
@@ -285,8 +285,7 @@ class LRFinder:
             sigma = np.std(losses - smooth_loss)
             if np.min(losses) > mu - 2 * sigma:
                 raise UnstableLREstimate(
-                    "The loss vs LR curve did not have a clear minimum "
-                    "away from background noise."
+                    "The loss vs LR curve did not have a clear minimum away from background noise."
                 )
 
         # Suggest the LR at the steepest point

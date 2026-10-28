@@ -16,7 +16,7 @@ class TestLRFinderSGD(unittest.TestCase):
         torch.random.manual_seed(267317931)
         self.model = torch.nn.Linear(10, 5)
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.01)
-        self.criterion = torch.nn.MSELoss()
+        self.criterion = lambda x, y, t: torch.nn.functional.mse_loss(y, t, reduction="mean")
         self.lr_finder = LRFinder(self.model, self.optimizer, self.criterion)
 
     def _gen_data_and_run(self, seed=3779420):
@@ -84,7 +84,7 @@ class TestLRFinderSGD(unittest.TestCase):
 
     def test_lr_finder_alternate_criterion(self):
         # Overwrite with a different criterion (L1 loss) and test if the LR finder still works
-        self.lr_finder.criterion = lambda x, y: torch.nn.functional.l1_loss(x, y, reduction="mean")
+        self.lr_finder.criterion = lambda x, y, t: torch.nn.functional.l1_loss(y, t, reduction="mean")
         self._gen_data_and_run(seed=4782481)
         lr1 = self.lr_finder.suggestion()
 
@@ -93,10 +93,10 @@ class TestLRFinderSGD(unittest.TestCase):
 
         # Scale up the loss by 2x --> we expect roughly that the suggested learning rate will be
         # 1/2 smaller
-        self.lr_finder.criterion = lambda x, y: (
-            2 * torch.nn.functional.l1_loss(x, y, reduction="mean")
+        self.lr_finder.criterion = lambda x, y, t: (
+            2 * torch.nn.functional.l1_loss(y, t, reduction="mean")
         )
-        self._gen_data_and_run(seed=4782481)
+        self._gen_data_and_run(seed=478248)
         lr2 = self.lr_finder.suggestion()
 
         self.assertGreater(lr2, 1e-7)
@@ -107,8 +107,8 @@ class TestLRFinderSGD(unittest.TestCase):
 
         # Scale up the loss by 4x --> we expect roughly that the suggested learning rate will be
         # 1/4 smaller
-        self.lr_finder.criterion = lambda x, y: (
-            4 * torch.nn.functional.l1_loss(x, y, reduction="mean")
+        self.lr_finder.criterion = lambda x, y, t: (
+            4 * torch.nn.functional.l1_loss(y, t, reduction="mean")
         )
         self._gen_data_and_run(seed=4782481)
         lr4 = self.lr_finder.suggestion()
@@ -126,5 +126,5 @@ class TestLRFinderAdam(TestLRFinderSGD):
         torch.random.manual_seed(267317931)
         self.model = torch.nn.Linear(10, 5)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.01)
-        self.criterion = torch.nn.MSELoss()
+        self.criterion = lambda x, y, t: torch.nn.functional.mse_loss(y, t, reduction="mean")
         self.lr_finder = LRFinder(self.model, self.optimizer, self.criterion)
