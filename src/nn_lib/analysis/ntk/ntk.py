@@ -62,7 +62,7 @@ def _create_functional_model_as_fn_of_params(model: nn.Module):
             "instance, then it must be frozen or squashed prior to calling any NTK utilities."
         )
 
-    params_copy = {name: param.detach() for name, param in model.named_parameters()}
+    params_copy = {name: param.detach().clone() for name, param in model.named_parameters()}
 
     def _single_forward(params_, x_):
         return functional_call(model, params_, x_.unsqueeze(0)).squeeze(0)
@@ -82,7 +82,7 @@ def _create_functional_loss_as_fn_of_params(
             "instance, then it must be frozen or squashed prior to calling any NTK utilities."
         )
 
-    params_copy = {name: param.detach() for name, param in model.named_parameters()}
+    params_copy = {name: param.detach().clone() for name, param in model.named_parameters()}
 
     def _single_forward(params_, x_, y_):
         return loss_fn(functional_call(model, params_, x_.unsqueeze(0)).squeeze(0), y_)

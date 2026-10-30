@@ -19,24 +19,23 @@ class TestNTKLinearization(unittest.TestCase):
     H = 4
     EPS = 1e-5
 
-    @classmethod
-    def setUpClass(cls):
+    def setUp(self):
         # Create a small model for testing. Include a variety of layer types deliberately.
         model_bn = nn.Sequential(
-            nn.Conv2d(cls.I, cls.H, kernel_size=3, padding=1),
-            nn.BatchNorm2d(cls.H),
+            nn.Conv2d(self.I, self.H, kernel_size=3, padding=1),
+            nn.BatchNorm2d(self.H),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(cls.H * 100, cls.H),
+            nn.Linear(self.H * 100, self.H),
             nn.ReLU(),
-            nn.Linear(cls.H, cls.O),
+            nn.Linear(self.H, self.O),
         ).eval()
-        cls.model = GraphModulePlus.new_from_trace(model_bn).squash_all_conv_batchnorm_pairs()
-        cls.linearized_model = linearize_model(cls.model)
-        cls.loss_fn = nn.CrossEntropyLoss()
-        cls.x = torch.randn(cls.M, cls.I, 10, 10)
-        cls.y = torch.randint(0, cls.O, (cls.M,))
-        cls.devices = ["cpu"] if not torch.cuda.is_available() else ["cpu", "cuda:0"]
+        self.model = GraphModulePlus.new_from_trace(model_bn).squash_all_conv_batchnorm_pairs()
+        self.linearized_model = linearize_model(self.model)
+        self.loss_fn = nn.CrossEntropyLoss()
+        self.x = torch.randn(self.M, self.I, 10, 10)
+        self.y = torch.randint(0, self.O, (self.M,))
+        self.devices = ["cpu"] if not torch.cuda.is_available() else ["cpu", "cuda:0"]
 
     def _set_device(self, device):
         self.model = self.model.to(device)
