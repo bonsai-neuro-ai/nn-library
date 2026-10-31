@@ -12,6 +12,11 @@ class TestHSICEstimators(unittest.TestCase):
         cls.x = torch.randn(cls.m, 5, dtype=torch.float64)
         cls.y = torch.randn(cls.m, 6, dtype=torch.float64)
 
+    def test_opt_einsum_available(self):
+        # Without opt-einsum, torch.einsum contracts left to right and chunsum's self path builds an
+        # m*m*n tensor
+        self.assertTrue(torch.backends.opt_einsum.is_available())
+
     def test_chunsum_xx(self):
         expected_ijlm_xx = 0.0
         for i, j, l, m in product(range(self.m), range(self.m), range(self.m), range(self.m)):

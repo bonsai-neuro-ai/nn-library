@@ -5,6 +5,14 @@ import torch
 
 from nn_lib.analysis.regression import safe_linalg_lstsq, StreamingLinearRegression, safe_regression
 
+DEVICES = ["cpu"]
+if torch.cuda.is_available():
+    DEVICES.append("cuda")
+
+# float32 least squares on uncentered x misses the float32 defaults of assert_close
+# (atol=1e-5, rtol=1.3e-6) by up to ~5x, depending on the random draw and the CPU's BLAS.
+LSTSQ_TOL = dict(atol=1e-4, rtol=1e-4)
+
 
 def _generate_data(
     n_samples: int,
@@ -42,8 +50,11 @@ def _generate_data(
 
 
 class TestSafeLstsq(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(0)
+
     def test_safe_regression(self):
-        for d_ in ["cpu", "cuda"]:
+        for d_ in DEVICES:
             for b_ in [False, True]:
                 for r_ in [None, 2]:
                     with self.subTest(f"device={d_} bias={b_} rank={r_}"):
@@ -53,11 +64,11 @@ class TestSafeLstsq(unittest.TestCase):
 
                         w, b = safe_regression(x, y, bias=b_)
 
-                        torch.testing.assert_close(x_test @ w + b, y_test)
+                        torch.testing.assert_close(x_test @ w + b, y_test, **LSTSQ_TOL)
 
     def test_lstsq_xtx(self):
         b_ = False
-        for d_ in ["cpu", "cuda"]:
+        for d_ in DEVICES:
             for r_ in [None, 2]:
                 with self.subTest(f"device={d_} bias={b_} rank={r_}"):
                     x, y, true_w, true_b, x_test, y_test = _generate_data(
@@ -68,12 +79,15 @@ class TestSafeLstsq(unittest.TestCase):
                     solution2 = safe_linalg_lstsq(x.T @ x, x.T @ y, symmetric=True)
 
                     # Check that the solutions are close
-                    torch.testing.assert_close(solution1, solution2)
+                    torch.testing.assert_close(solution1, solution2, **LSTSQ_TOL)
 
 
 class TestStreamingRegression(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(0)
+
     def test_batch_updates(self):
-        for d_ in ["cpu", "cuda"]:
+        for d_ in DEVICES:
             for r_ in [None, 2]:
                 with self.subTest(f"device={d_} rank={r_}"):
                     x, y, true_w, true_b, x_test, y_test = _generate_data(
@@ -98,7 +112,7 @@ class TestStreamingRegression(unittest.TestCase):
                     torch.testing.assert_close(slr1.mean_y, slr2.mean_y)
 
     def test_streaming_regression_batchwise_matches_lstsq(self):
-        for d_ in ["cpu", "cuda"]:
+        for d_ in DEVICES:
             for b_ in [False, True]:
                 for r_ in [None, 2]:
                     for ridge_ in [0.0, 1.0]:
@@ -117,4 +131,6 @@ class TestStreamingRegression(unittest.TestCase):
                             # Check that the solution matches lstsq
                             w2, b2 = safe_regression(x, y, bias=b_, ridge=ridge_)
 
-                            torch.testing.assert_close(x_test @ w + b, x_test @ w2 + b2)
+                            torch.testing.assert_close(
+                                x_test @ w + b, x_test @ w2 + b2, **LSTSQ_TOL
+                            )

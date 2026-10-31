@@ -10,6 +10,10 @@ from nn_lib.utils.stats import (
     RunningCovariance,
 )
 
+DEVICES = ["cpu"]
+if torch.cuda.is_available():
+    DEVICES.append("cuda")
+
 
 def mean_helper(x, centered):
     if centered:
@@ -34,8 +38,11 @@ def covariance_helper(x, y, centered):
 
 
 class TestStats(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(0)
+
     def test_running_average_1(self):
-        for device in ["cpu", "cuda"]:
+        for device in DEVICES:
             with self.subTest(f"device={device}"):
                 values = torch.rand(10, device=device)
                 ra = RunningAverage()
@@ -44,7 +51,7 @@ class TestStats(unittest.TestCase):
                 assert_close(ra.avg, torch.mean(values))
 
     def test_running_average_batched(self):
-        for device in ["cpu", "cuda"]:
+        for device in DEVICES:
             with self.subTest(f"device={device}"):
                 values = torch.rand(10, device=device)
                 ra = RunningAverage()
@@ -53,7 +60,7 @@ class TestStats(unittest.TestCase):
                 assert_close(ra.avg, torch.mean(values))
 
     def test_covariance_x(self):
-        for device in ["cpu", "cuda"]:
+        for device in DEVICES:
             for centered in [False, True]:
                 with self.subTest(f"device={device}, centered={centered}"):
                     x = torch.rand((100, 2), device=device)
@@ -74,7 +81,7 @@ class TestStats(unittest.TestCase):
                     assert_close(rc.covariance, covariance_helper(x, x, centered=centered))
 
     def test_variance_vector_x(self):
-        for device in ["cpu", "cuda"]:
+        for device in DEVICES:
             for centered in [False, True]:
                 with self.subTest(f"device={device}, centered={centered}"):
                     x = torch.rand((100, 2), device=device)
@@ -95,7 +102,7 @@ class TestStats(unittest.TestCase):
                     assert_close(rv.variance, variance_helper(x, centered=centered))
 
     def test_variance_tensor_x(self):
-        for device in ["cpu", "cuda"]:
+        for device in DEVICES:
             for centered in [False, True]:
                 with self.subTest(f"device={device}, centered={centered}"):
                     x = torch.rand((100, 2, 3, 4), device=device)
@@ -116,7 +123,7 @@ class TestStats(unittest.TestCase):
                     assert_close(rv.variance, variance_helper(x, centered=centered))
 
     def test_covariance_xx(self):
-        for device in ["cpu", "cuda"]:
+        for device in DEVICES:
             for centered in [False, True]:
                 with self.subTest(f"device={device}, centered={centered}"):
                     x = torch.rand((100, 2), device=device)
@@ -137,7 +144,7 @@ class TestStats(unittest.TestCase):
                     assert_close(rc.covariance, covariance_helper(x, x, centered=centered))
 
     def test_covariance_xy(self):
-        for device in ["cpu", "cuda"]:
+        for device in DEVICES:
             for centered in [False, True]:
                 with self.subTest(f"device={device}, centered={centered}"):
                     x = torch.rand((100, 2), device=device)
@@ -163,11 +170,13 @@ class TestStats(unittest.TestCase):
         y1 = torch.rand((1000, 3))
 
         def _naive_cov(x_, y_):
-            # Naive cov estimator is E[xy]-E[x]E[y]
-            E_xy = x_.T @ y_ / 1000
+            # Naive cov estimator is E[xy]-E[x]E[y], times n/(n-1) to match the dof=1 of
+            # RunningCovariance(centered=True)
+            n = x_.shape[0]
+            E_xy = x_.T @ y_ / n
             E_x = torch.mean(x_, dim=0)
             E_y = torch.mean(y_, dim=0)
-            return E_xy - E_x[:, None] * E_y[None, :]
+            return (E_xy - E_x[:, None] * E_y[None, :]) * n / (n - 1)
 
         # Get both the naive and stable cov estimators for x1 y1
         naive_cov_xy1 = _naive_cov(x1, y1)
@@ -194,8 +203,9 @@ class TestStats(unittest.TestCase):
         with self.assertRaises(AssertionError):
             assert_close(naive_cov_xy2, stable_cov_xy2)
 
-        # Assert that the stable estimates agree with each other
-        assert_close(stable_cov_xy, stable_cov_xy2)
+        # Assert that the stable estimates agree with each other. Float32 arithmetic in the running
+        # update at offset 1e3 (where float32 steps by 6.1e-5) leaves up to ~1.6e-5.
+        assert_close(stable_cov_xy, stable_cov_xy2, atol=5e-5, rtol=0)
 
     def test_running_variance(self):
         # 10 batches of 100 values each, with dimension 3

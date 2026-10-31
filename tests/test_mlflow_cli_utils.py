@@ -1,5 +1,4 @@
 import json
-import os
 import unittest
 from tempfile import TemporaryDirectory
 
@@ -33,7 +32,7 @@ class DummySubclassB(DummyBase):
 class TestMLFlowUtils(unittest.TestCase):
     def setUp(self):
         self.tempdir = TemporaryDirectory()
-        self.uri = os.path.abspath(os.path.join("sqlite:///", self.tempdir.name, "mlflow.db"))
+        self.uri = f"sqlite:///{self.tempdir.name}/mlflow.db"
         mlflow.set_tracking_uri(self.uri)
         mlflow.set_experiment("test_experiment")
 
@@ -162,7 +161,7 @@ class TestCLIUtils(unittest.TestCase):
 class TestDeprecation(unittest.TestCase):
     def setUp(self):
         self.tempdir = TemporaryDirectory()
-        self.uri = os.path.abspath(os.path.join("sqlite:///", self.tempdir.name, "mlflow.db"))
+        self.uri = f"sqlite:///{self.tempdir.name}/mlflow.db"
         mlflow.set_tracking_uri(self.uri)
         mlflow.set_experiment("test_experiment")
 

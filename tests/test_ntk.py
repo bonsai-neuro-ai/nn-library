@@ -18,6 +18,7 @@ class TestNTK(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        torch.manual_seed(0)
         # Create a small model for testing. Include a variety of layer types deliberately.
         cls.model_bn = GraphModulePlus.new_from_trace(
             nn.Sequential(
@@ -60,7 +61,9 @@ class TestNTK(unittest.TestCase):
                             self.assertEqual(ntk1.shape, (self.M, self.M))
                         case "diagonal":
                             self.assertEqual(ntk1.shape, (self.M, self.M, self.O))
-                    self.assertTrue(torch.allclose(ntk1, ntk2))
+                    # assert_close picks its tolerance from the dtype; allclose's rtol=1e-5,
+                    # atol=1e-8 is too tight for float32 values near zero.
+                    torch.testing.assert_close(ntk1, ntk2)
 
     def test_ntk_task_matches_einsum(self):
         for device in self.devices:

@@ -6,6 +6,10 @@ from torch.testing import assert_close as assert_close_torch
 
 from nn_lib.utils import rank_one_svd_update
 
+DEVICES = ["cpu"]
+if torch.cuda.is_available():
+    DEVICES.append("cuda")
+
 
 def assert_close(x, y, lenience=0.0):
     atol = (10.0**lenience) * np.sqrt(torch.finfo(x.dtype).eps)
@@ -44,7 +48,7 @@ class TestLinalgUtils(unittest.TestCase):
 
     def test_rank1_svd_update_full_rank(self):
         for dt in [torch.float32, torch.float64]:
-            for device in ["cpu", "cuda"]:
+            for device in DEVICES:
                 with self.subTest(msg=f"dtype={dt} device={device}"):
                     self._test_svd_update_helper(
                         torch.rand(20, 5, dtype=dt, device=device),
@@ -53,7 +57,7 @@ class TestLinalgUtils(unittest.TestCase):
 
     def test_rank1_svd_update_rank_deficient(self):
         for dt in [torch.float32, torch.float64]:
-            for device in ["cpu", "cuda"]:
+            for device in DEVICES:
                 with self.subTest(msg=f"dtype={dt} device={device}"):
                     self._test_svd_update_helper(
                         torch.rand(4, 5, dtype=dt, device=device),

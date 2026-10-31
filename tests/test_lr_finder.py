@@ -1,6 +1,8 @@
 import unittest
 from functools import partial
+from unittest.mock import patch
 
+import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -59,7 +61,9 @@ class TestLRFinder(unittest.TestCase):
 
     def test_select_lr(self):
         self._gen_data_and_run()
-        self.lr_finder.plot()
+        with patch("matplotlib.pyplot.show"):  # plot() ends in plt.show(), which can block
+            self.lr_finder.plot()
+        plt.close("all")
         lr = self.lr_finder.suggestion()
 
         self.assertGreater(lr, 1e-7)

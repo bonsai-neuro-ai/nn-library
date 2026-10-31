@@ -1,5 +1,5 @@
 import unittest
-from os import getenv
+from os import getenv, path
 
 from dotenv import load_dotenv
 
@@ -17,6 +17,8 @@ class TestDatasetsExist(unittest.TestCase):
     def setUpClass(cls):
         load_dotenv()
         cls.data_root = getenv("DATA_ROOT", "data")
+        if not path.isdir(cls.data_root):
+            raise unittest.SkipTest(f"no dataset folder at {cls.data_root!r}; set DATA_ROOT")
 
     def test_mnist_train(self):
         data = MNISTDataModule(root_dir=self.data_root)

@@ -6,6 +6,10 @@ import torch
 
 from nn_lib.models.fancy_layers import *
 
+DEVICES = ["cpu"]
+if torch.cuda.is_available():
+    DEVICES.append("cuda")
+
 
 class BaseTestRegressable(metaclass=ABCMeta):
     @property
@@ -127,14 +131,11 @@ class BaseTestRegressable(metaclass=ABCMeta):
         for vals in product(*self.the_kwargs.values()):
             kwargs = dict(zip(self.the_kwargs.keys(), vals))
             with self.subTest(msg=", ".join(f"{k}={v}" for k, v in kwargs.items())):
-                self.assert_recovers_gt_helper(n_examples=1000, device="cpu", **kwargs)
-                self.assert_recovers_gt_helper(n_examples=1000, device="cuda", **kwargs)
-                self.assert_recovers_gt_helper(
-                    n_examples=1000, device="cpu", batch_size=50, **kwargs
-                )
-                self.assert_recovers_gt_helper(
-                    n_examples=1000, device="cuda", batch_size=50, **kwargs
-                )
+                for device in DEVICES:
+                    self.assert_recovers_gt_helper(n_examples=1000, device=device, **kwargs)
+                    self.assert_recovers_gt_helper(
+                        n_examples=1000, device=device, batch_size=50, **kwargs
+                    )
 
     def test_params_grads(self):
         for vals in product(*self.the_kwargs.values()):
