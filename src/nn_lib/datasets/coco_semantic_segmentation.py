@@ -1,7 +1,8 @@
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from nn_lib.datasets.base import TorchvisionDataModuleBase, TorchvisionDatasetType
 from torchvision.datasets import CocoDetection, wrap_dataset_for_transforms_v2
+
+from nn_lib.datasets.base import TorchvisionDataModuleBase, TorchvisionDatasetType
 
 
 class CocoDetectionDataModule(TorchvisionDataModuleBase):
