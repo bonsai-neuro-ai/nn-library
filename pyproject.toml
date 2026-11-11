@@ -26,6 +26,7 @@ dependencies = [
     "matplotlib",
     "mlflow",
     "numpy",
+    "opt-einsum",
     "pandas",
     "parse",
     "pycocotools",
