@@ -166,9 +166,10 @@ class RunningCovariance:
         if values_y is None:
             y = x
         else:
-            y = _as_batch(values_y).reshape(b, -1)
+            y = _as_batch(values_y)
             if y.shape[0] != b:
                 raise ValueError(f"Batch sizes differ: x has {b}, y has {y.shape[0]}")
+            y = y.reshape(b, -1)
         m = self.count
 
         if self.centered:

@@ -87,43 +87,24 @@ class TestLRFinderSGD(unittest.TestCase):
         self.assertLess(lr, 1e2)
 
     def test_lr_finder_alternate_criterion(self):
-        # Overwrite with a different criterion (L1 loss) and test if the LR finder still works
-        self.lr_finder.criterion = lambda x, y, t: torch.nn.functional.l1_loss(
-            y, t, reduction="mean"
-        )
-        self._gen_data_and_run(seed=4782481)
-        lr1 = self.lr_finder.suggestion()
+        # Scaling the loss scales the gradient magnitude for SGD, but the optimal ∆parameter update
+        # size should not be affected. This test asserts that at 2x the loss scale, the optimal
+        # LR is selected to be 1/2x as big, etc.
 
-        self.assertGreater(lr1, 1e-7)
-        self.assertLess(lr1, 1e2)
+        def scaled_l1(scale):
+            return lambda x, y, t: scale * torch.nn.functional.l1_loss(y, t, reduction="mean")
 
-        # Scale up the loss by 2x --> we expect roughly that the suggested learning rate will be
-        # 1/2 smaller
-        self.lr_finder.criterion = lambda x, y, t: (
-            2 * torch.nn.functional.l1_loss(y, t, reduction="mean")
-        )
-        self._gen_data_and_run(seed=478248)
-        lr2 = self.lr_finder.suggestion()
+        suggestions = {}
+        for scale in (1, 2, 4):
+            self.setUp()
+            self.lr_finder.criterion = scaled_l1(float(scale))
+            self._gen_data_and_run(seed=4782481)
+            suggestions[scale] = self.lr_finder.suggestion()
+            self.assertGreater(suggestions[scale], 1e-7)
+            self.assertLess(suggestions[scale], 1e2)
 
-        self.assertGreater(lr2, 1e-7)
-        self.assertLess(lr2, 1e2)
-
-        # Should be within an 2x order of magnitude of 1/100
-        torch.testing.assert_close(lr2, 1 / 2 * lr1, atol=0.1, rtol=0.1)
-
-        # Scale up the loss by 4x --> we expect roughly that the suggested learning rate will be
-        # 1/4 smaller
-        self.lr_finder.criterion = lambda x, y, t: (
-            4 * torch.nn.functional.l1_loss(y, t, reduction="mean")
-        )
-        self._gen_data_and_run(seed=4782481)
-        lr4 = self.lr_finder.suggestion()
-
-        self.assertGreater(lr4, 1e-7)
-        self.assertLess(lr4, 1e2)
-
-        # Should be within an 2x order of magnitude of 1/100
-        torch.testing.assert_close(lr4, 1 / 4 * lr1, atol=0.1, rtol=0.1)
+        torch.testing.assert_close(suggestions[2], suggestions[1] / 2, atol=0.0, rtol=0.15)
+        torch.testing.assert_close(suggestions[4], suggestions[1] / 4, atol=0.0, rtol=0.15)
 
 
 class TestLRFinderAdam(TestLRFinderSGD):
@@ -134,3 +115,21 @@ class TestLRFinderAdam(TestLRFinderSGD):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.01)
         self.criterion = lambda x, y, t: torch.nn.functional.mse_loss(y, t, reduction="mean")
         self.lr_finder = LRFinder(self.model, self.optimizer, self.criterion)
+
+    def test_lr_finder_alternate_criterion(self):
+        # Adam normalizes each step by the gradient's size, so scaling the loss by a constant
+        # leaves the suggested learning rate unchanged (unlike SGD, tested in the parent class).
+        def scaled_l1(scale):
+            return lambda x, y, t: scale * torch.nn.functional.l1_loss(y, t, reduction="mean")
+
+        suggestions = {}
+        for scale in (1, 2, 4):
+            self.setUp()
+            self.lr_finder.criterion = scaled_l1(float(scale))
+            self._gen_data_and_run(seed=4782481)
+            suggestions[scale] = self.lr_finder.suggestion()
+            self.assertGreater(suggestions[scale], 1e-7)
+            self.assertLess(suggestions[scale], 1e2)
+
+        torch.testing.assert_close(suggestions[2], suggestions[1], atol=0.0, rtol=0.15)
+        torch.testing.assert_close(suggestions[4], suggestions[1], atol=0.0, rtol=0.15)
